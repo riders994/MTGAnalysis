@@ -1,0 +1,18 @@
+# Captured MTGA logs kept locally as replay fixtures (16 MB combined).
+# Tests use small synthetic logs, and opportunistically these if present.
+Player.log
+Player-prev.log
+output_log.txt
+restore.log
+
+# Local collector output
+archive/
+config.toml
+*.part
+*.lock
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
