@@ -1,0 +1,52 @@
+# MTGA log collector configuration.
+#
+# Copy to config.toml and edit. `python -m collector discover` will find these
+# paths on your machine and print a filled-in version of this file.
+
+[paths]
+# Where captures are stored. This directory is the source of truth; `push`
+# copies it to the storage host on demand.
+archive_dir = "C:/Users/weezy/MTGAnalysis/archive"
+
+# Arena's live log. Unity writes to LocalLow/<Company>/<Product>/Player.log.
+# Required to capture; omit it on the storage host, where only `verify` and
+# reporting run and there is no Arena to watch.
+player_log = "%USERPROFILE%/AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log"
+
+# The previous session, which Arena rotates to at launch. Defaults to
+# Player-prev.log beside player_log; only set this if yours lives elsewhere.
+# player_prev_log = ""
+
+[capture]
+# Arena appends continuously while running. Two seconds is frequent enough to
+# never fall behind and cheap enough to ignore.
+poll_interval_seconds = 2.0
+
+# How often to check the card database and tracker files for changes. These
+# change rarely, so this can be lazy.
+snapshot_interval_seconds = 300
+
+# Maps the numeric grpIds in the log to real card names and sets. Changes only
+# when Arena updates for a new set, and is stored once per version.
+[[snapshot]]
+name = "carddb"
+globs = [
+  "C:/Program Files/Wizards of the Coast/MTGA/MTGA_Data/Downloads/Raw/Raw_CardDatabase_*.mtga",
+]
+
+# Whatever your tracker persists. SQLite files are copied with the backup API
+# so a live database yields a consistent snapshot rather than a torn one.
+# Run `discover` to find candidates, then keep only the ones you actually want.
+[[snapshot]]
+name = "tracker"
+globs = [
+  # "%APPDATA%/YourTracker/data.db",
+]
+
+# Destination for `python -m collector push`. Nothing is sent automatically.
+# Transport is ssh + scp, driven by a manifest diff; pass --rsync to override.
+[push]
+host = "pi@raspberrypi.local"
+remote_dir = "/srv/mtga-archive"
+# ssh_port = 22
+# identity_file = "C:/Users/weezy/.ssh/id_ed25519"
