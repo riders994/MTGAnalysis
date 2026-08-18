@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import os
 import sqlite3
 import textwrap
 from pathlib import Path
@@ -174,7 +175,7 @@ def test_push_requires_configuration(cfg):
         push_mod.run(cfg)
 
 
-def test_push_defaults_to_scp_even_when_rsync_is_available(cfg, monkeypatch):
+def test_push_defaults_to_ssh_even_when_rsync_is_available(cfg, monkeypatch):
     """rsync on PATH must not hijack the transport.
 
     On Windows an rsync on PATH is usually WSL's, which resolves C:/... against
@@ -186,14 +187,84 @@ def test_push_defaults_to_scp_even_when_rsync_is_available(cfg, monkeypatch):
     monkeypatch.setattr(push_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
 
     called = []
-    monkeypatch.setattr(push_mod, "_push_scp", lambda *a, **k: called.append("scp"))
+    monkeypatch.setattr(push_mod, "_push_ssh", lambda *a, **k: called.append("ssh"))
     monkeypatch.setattr(push_mod, "_push_rsync", lambda *a, **k: called.append("rsync"))
 
     push_mod.run(cfg)
-    assert called == ["scp"]
+    assert called == ["ssh"]
 
     push_mod.run(cfg, use_rsync=True)
-    assert called == ["scp", "rsync"]
+    assert called == ["ssh", "rsync"]
+
+
+def test_push_sends_every_file_over_one_connection(cfg, monkeypatch):
+    """One authentication per push, not one per file.
+
+    A passphrase-protected key is unlocked once per ssh connection, so the
+    transfer must be a single command however many files and directories it
+    covers — and the listing call must share that same connection.
+    """
+    from collector.config import PushConfig
+
+    cfg.ensure_dirs()
+    for day in ("20260816", "20260817", "20260818"):
+        directory = cfg.sessions_dir / day
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"session-{day}T111009-abcd1234.log.gz").write_bytes(b"data")
+
+    cfg.push = PushConfig(host="pi@pi.local", remote_dir="/srv/arch")
+    monkeypatch.setattr(push_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(push_mod, "_remote_files", lambda push, shared: set())
+
+    connections = []
+
+    class FakeProcess:
+        returncode = 0
+        stdout = None
+
+        def __init__(self, command):
+            self.args = command
+
+        def communicate(self, input=None, timeout=None):
+            return b"", b""
+
+        def wait(self):
+            return 0
+
+        def poll(self):
+            return 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_popen(command, **kwargs):
+        # `-O exit` closes the shared master; it authenticates nothing.
+        if command[0] == "ssh" and "-O" not in command:
+            connections.append(command)
+        return FakeProcess(command)
+
+    monkeypatch.setattr(push_mod.subprocess, "Popen", fake_popen)
+
+    out = push_mod.run(cfg)
+
+    assert len(connections) == 1, f"expected one ssh command, got {connections}"
+    assert "3 file(s)" in out
+
+
+def test_push_shares_one_ssh_connection_across_commands(cfg):
+    """The listing and the transfer must reuse a single authenticated session."""
+    from collector.config import PushConfig
+
+    push = PushConfig(host="pi@pi.local", remote_dir="/srv/arch")
+    with push_mod._shared_connection(push) as shared:
+        if os.name == "nt":  # Win32-OpenSSH cannot multiplex; nothing to share.
+            assert shared == []
+        else:
+            assert "ControlMaster=auto" in shared
+            assert any(option.startswith("ControlPath=") for option in shared)
 
 
 def test_push_explains_a_missing_ssh_client(cfg, monkeypatch):

@@ -44,7 +44,8 @@ globs = [
 ]
 
 # Destination for `python -m collector push`. Nothing is sent automatically.
-# Transport is ssh + scp, driven by a manifest diff; pass --rsync to override.
+# Transport is ssh, driven by a manifest diff; pass --rsync to override. The
+# whole push runs over one connection, so a passphrase is asked for once.
 [push]
 host = "pi@raspberrypi.local"
 remote_dir = "/srv/mtga-archive"
