@@ -141,6 +141,75 @@ python -m collector verify              # re-hash every archive against metadata
 `status` is what catches silent failure: a stale `last tick`, a `DISABLED`
 detailed-logs flag, or a buffer that never finalizes.
 
+## Updating after a patch
+
+A pull does not re-register anything. The Scheduled Task runs `pythonw -m
+collector run` from the repo working directory, so it loads whatever is on disk
+the next time it starts. What it will *not* do is notice a change while it is
+running — the old code stays loaded until the task restarts.
+
+Best done with **Arena closed**, so no capture is in flight:
+
+```powershell
+cd $env:USERPROFILE\MTGAnalysis
+schtasks /End /TN "MTGA Log Collector"
+git pull
+schtasks /Run /TN "MTGA Log Collector"
+python -m collector status
+```
+
+`collector` should read `RUNNING` again, with a fresh `last tick`.
+
+Stopping mid-session is safe if you cannot close Arena first: on restart the
+collector resumes from the `.part` buffer when the live log is unchanged, and
+if Arena rotated the log while it was down it recovers that session from
+`Player-prev.log`. The one case that genuinely loses data is leaving it stopped
+across *two* Arena restarts — by the second, `Player-prev.log` has been
+overwritten. So restart it before you play again, not tomorrow.
+
+Your `config.toml` is never touched by a pull; it is gitignored. New options do
+appear in `config.example.toml`, which is worth a glance after each update:
+
+```powershell
+git diff HEAD@{1} -- config.example.toml
+```
+
+### When you also need to re-run `install`
+
+The task XML bakes in absolute paths to the interpreter and to `config.toml`, so
+re-register whenever one of those moves:
+
+- you installed or upgraded Python, so `pythonw.exe` lives somewhere new
+- you moved the repo or the config
+- the change notes say the task definition itself changed
+
+```powershell
+python -m collector install
+schtasks /Run /TN "MTGA Log Collector"
+python -m collector status
+```
+
+`install` overwrites the existing task in place, so re-running it costs nothing
+if you are unsure. Note that registering does not start it — hence the
+`schtasks /Run`.
+
+### After a patch that touches capture or the archive
+
+Verify before you push, so a bad build is caught while the source of truth is
+still on Windows and the Pi's copy is still known-good:
+
+```powershell
+python -m collector verify
+python -m collector push
+```
+
+If an update changes the state file format, the collector starts from a fresh
+`state.json` rather than reading the old one. That costs at most one re-archived
+session, which the content-addressed filenames then dedupe — nothing to do.
+
+The Pi's clone (B5) is only used for `verify` and `status`, so it can be updated
+whenever you next SSH in: `cd ~/MTGAnalysis && git pull`.
+
 ## Troubleshooting
 
 | Symptom | Cause and fix |
@@ -149,6 +218,7 @@ detailed-logs flag, or a buffer that never finalizes.
 | `detailed  DISABLED` | Detailed Logs is off in Arena. See A2, and restart Arena. |
 | `watching ... (not present)` | `player_log` path is wrong. Re-run `discover`. |
 | `Another collector already holds ...` | It is already running. That is the single-instance guard doing its job. |
+| A fix from a patch is not taking effect | The task is still running the old code. `schtasks /End` then `/Run` it — see *Updating after a patch*. |
 | Sessions missing for a day you played | The collector was down across an Arena restart *and* a second restart happened before it came back, so `Player-prev.log` had already been overwritten. Check `collector.log` in the archive directory. |
 
 Detailed logs of the collector's own activity live in `archive\collector.log`.
@@ -237,10 +307,35 @@ Nothing to send; remote is up to date.
 
 The live capture buffer, the lock file, and machine-local state are never sent.
 
-`--rsync` is available if you have rsync on the Windows box, but ssh+scp is the
-default on purpose: an rsync on a Windows PATH is usually WSL's, which resolves
-`C:/...` against the Linux filesystem and silently sends nothing. And rsync's
-advantage is efficiently re-sending files that changed, which these never do.
+`--rsync` is available if you have rsync on the Windows box, but plain ssh is
+the default on purpose: an rsync on a Windows PATH is usually WSL's, which
+resolves `C:/...` against the Linux filesystem and silently sends nothing. And
+rsync's advantage is efficiently re-sending files that changed, which these
+never do.
+
+### If it asks for your key passphrase
+
+A push authenticates once, not once per file: everything missing goes up in a
+single `tar` stream over one ssh command, and on Linux/macOS the listing call
+shares that connection too. So the most you should ever see is one prompt per
+push — two on Windows, whose OpenSSH build cannot share connections.
+
+To get to zero, hand the key to the ssh agent once per login. On Windows,
+enable the agent service (as Administrator, once ever):
+
+```powershell
+Set-Service ssh-agent -StartupType Automatic
+Start-Service ssh-agent
+```
+
+then add the key (once per key, it is remembered across reboots):
+
+```powershell
+ssh-add $env:USERPROFILE\.ssh\id_ed25519
+```
+
+On Linux/macOS the agent is usually already running, so `ssh-add ~/.ssh/id_ed25519`
+is all it takes. After that `push` runs without prompting at all.
 
 ## B5. Verify the copy on the Pi
 
