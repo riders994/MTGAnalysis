@@ -1,0 +1,93 @@
+"""Command line entry point."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from collector.config import ConfigError, load
+
+from . import __version__, card_stats, deck_changelog
+
+
+def cmd_deck_changelog(cfg, args: argparse.Namespace) -> int:
+    summary = deck_changelog.run(cfg)
+    print(f"scanned {summary.sessions_scanned} session(s), "
+          f"found {summary.saves_found} deck save(s)")
+    print(f"wrote {len(summary.decks_written)} changelog(s) to "
+          f"{cfg.archive_dir / 'changelogs'}")
+    for name in sorted(summary.decks_written):
+        print(f"  {name}")
+    for warning in summary.warnings:
+        print(f"  ! {warning}")
+    return 1 if summary.warnings and not summary.decks_written else 0
+
+
+def cmd_card_stats(cfg, args: argparse.Namespace) -> int:
+    summary = card_stats.run(cfg)
+    print(f"scanned {summary.sessions_scanned} session(s), "
+          f"found {summary.matches_found} match(es)")
+    print(f"wrote {len(summary.decks_written)} report(s) to "
+          f"{cfg.archive_dir / 'card_stats'}")
+    for name in sorted(summary.decks_written):
+        print(f"  {name}")
+    for warning in summary.warnings:
+        print(f"  ! {warning}")
+    return 1 if summary.warnings and not summary.decks_written else 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--config", type=Path, default=argparse.SUPPRESS, help="path to config.toml"
+    )
+    common.add_argument(
+        "--verbose",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="debug logging",
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="analysis",
+        description="Reports over the collector's archive.",
+        parents=[common],
+    )
+    parser.add_argument("--version", action="version", version=__version__)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    changelog_parser = sub.add_parser(
+        "deck-changelog",
+        help="regenerate per-deck Markdown changelogs",
+        parents=[common],
+    )
+    changelog_parser.set_defaults(func=cmd_deck_changelog)
+
+    card_stats_parser = sub.add_parser(
+        "card-stats",
+        help="regenerate per-deck personal card-performance reports",
+        parents=[common],
+    )
+    card_stats_parser.set_defaults(func=cmd_card_stats)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    args.config = getattr(args, "config", None)
+    args.verbose = getattr(args, "verbose", False)
+
+    try:
+        cfg = load(args.config)
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    cfg.ensure_dirs()
+
+    return args.func(cfg, args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

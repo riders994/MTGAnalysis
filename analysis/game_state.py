@@ -1,0 +1,244 @@
+"""Reconstructing per-game hand contents from GRE's stateful Full/Diff protocol.
+
+gameStateMessage.type is GameStateType_Full exactly once per game (a complete
+snapshot) then GameStateType_Diff for every subsequent message (only changed
+zones/gameObjects, plus diffDeletedInstanceIds for removed objects). This is
+materially more complex than any other parser in this package: it must carry
+running state (a zoneId -> zone map, an instanceId -> object map) across an
+entire game rather than parsing one event in isolation.
+
+Only our own objects (ownerSeatId == our seat) ever reveal a grpId in this
+data — opponent's hidden-zone cards stay as bare instance ids, which is
+exactly what's needed since we only score our own deck's cards.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from dataclasses import dataclass, field
+
+log = logging.getLogger(__name__)
+
+_INBOUND_GRE_RE = re.compile(r"Match to \w+: GreToClientEvent\r?\n(\{[^\r\n]+\})")
+
+
+@dataclass(frozen=True)
+class GameRecord:
+    match_id: str
+    game_number: int
+    opening_hand: frozenset[int]  # grpIds
+    drawn: frozenset[int]  # grpIds drawn after the opening hand
+
+
+@dataclass
+class _Zone:
+    zone_type: str | None
+    owner_seat_id: int | None
+    object_instance_ids: set[int] = field(default_factory=set)
+
+
+@dataclass
+class _Object:
+    grp_id: int
+    owner_seat_id: int | None
+    zone_id: int | None
+
+
+def _iter_game_state_messages(span_text: str):
+    """Every GameStateMessage in a GRE traffic span, in file order.
+
+    A single GreToClientEvent blob can bundle several GRE messages together
+    (e.g. a die roll alongside a game-state update); only the game-state ones
+    are yielded.
+    """
+    for match in _INBOUND_GRE_RE.finditer(span_text):
+        try:
+            payload = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            log.debug("unparsable GreToClientEvent, skipping")
+            continue
+        messages = (payload.get("greToClientEvent") or {}).get("greToClientMessages") or []
+        for message in messages:
+            if message.get("type") == "GREMessageType_GameStateMessage":
+                state = message.get("gameStateMessage")
+                if state:
+                    yield state
+
+
+class _GameTracker:
+    """Mutable running state for one game, built incrementally from Full+Diff messages."""
+
+    def __init__(self, our_seat_id: int):
+        self.our_seat_id = our_seat_id
+        self.game_number = 1
+        self.zones: dict[int, _Zone] = {}
+        self.objects: dict[int, _Object] = {}
+        self.hand_zone_id: int | None = None
+        self.opening_hand: set[int] | None = None
+        self.drawn: set[int] = set()
+        # Continuously updated hand contents, used both to snapshot the
+        # opening hand right before the first draw, and as a fallback if the
+        # game ends (e.g. a very early concession) before any draw happens.
+        self._last_hand_snapshot: set[int] = set()
+
+    def apply_full(self, message: dict) -> None:
+        game_info = message.get("gameInfo") or {}
+        self.game_number = game_info.get("gameNumber", 1)
+        self.zones = {}
+        self.objects = {}
+        self.opening_hand = None
+        self.drawn = set()
+
+        self._merge_zones(message.get("zones"))
+        self._merge_objects(message.get("gameObjects"))
+        self.hand_zone_id = next(
+            (
+                zone_id
+                for zone_id, zone in self.zones.items()
+                if zone.zone_type == "ZoneType_Hand" and zone.owner_seat_id == self.our_seat_id
+            ),
+            None,
+        )
+        self._last_hand_snapshot = self._current_hand_grp_ids()
+
+    def apply_diff(self, message: dict) -> None:
+        drawn_instance_ids = self._draw_instance_ids(message.get("annotations"))
+
+        # Opening hand is whatever was in hand right before the FIRST real
+        # draw — this naturally excludes any mulliganed-away hand, since a
+        # mulligan's replacement happens via diffDeletedInstanceIds/zones/
+        # gameObjects before this point. Not empirically confirmed against a
+        # real mulligan end-to-end; players[].mulliganCount is the documented
+        # fallback/cross-check if this heuristic doesn't hold up.
+        if drawn_instance_ids and self.opening_hand is None:
+            self.opening_hand = set(self._last_hand_snapshot)
+
+        for instance_id in message.get("diffDeletedInstanceIds") or []:
+            self._remove_object(instance_id)
+
+        self._merge_zones(message.get("zones"))
+        self._merge_objects(message.get("gameObjects"))
+
+        for instance_id in drawn_instance_ids:
+            obj = self.objects.get(instance_id)
+            if obj is not None and obj.owner_seat_id == self.our_seat_id:
+                self.drawn.add(obj.grp_id)
+
+        self._last_hand_snapshot = self._current_hand_grp_ids()
+
+    def _draw_instance_ids(self, annotations: list[dict] | None) -> list[int]:
+        """Instance ids drawn into our hand by this message's annotations."""
+        drawn_ids = []
+        for annotation in annotations or []:
+            if "AnnotationType_ZoneTransfer" not in (annotation.get("type") or []):
+                continue
+            details = {d.get("key"): d for d in annotation.get("details") or []}
+            category = (details.get("category") or {}).get("valueString") or []
+            if "Draw" not in category:
+                continue
+            zone_dest = (details.get("zone_dest") or {}).get("valueInt32") or []
+            if self.hand_zone_id not in zone_dest:
+                continue
+            drawn_ids.extend(annotation.get("affectedIds") or [])
+        return drawn_ids
+
+    def _current_hand_grp_ids(self) -> set[int]:
+        if self.hand_zone_id is None:
+            return set()
+        zone = self.zones.get(self.hand_zone_id)
+        if zone is None:
+            return set()
+        return {
+            self.objects[instance_id].grp_id
+            for instance_id in zone.object_instance_ids
+            if instance_id in self.objects
+        }
+
+    def _merge_zones(self, zones: list[dict] | None) -> None:
+        for entry in zones or []:
+            zone_id = entry.get("zoneId")
+            if zone_id is None:
+                continue
+            zone = self.zones.get(zone_id)
+            if zone is None:
+                zone = _Zone(zone_type=entry.get("type"), owner_seat_id=entry.get("ownerSeatId"))
+                self.zones[zone_id] = zone
+            else:
+                zone.zone_type = entry.get("type", zone.zone_type)
+                zone.owner_seat_id = entry.get("ownerSeatId", zone.owner_seat_id)
+            if "objectInstanceIds" in entry:
+                zone.object_instance_ids = set(entry["objectInstanceIds"])
+
+    def _merge_objects(self, game_objects: list[dict] | None) -> None:
+        for entry in game_objects or []:
+            instance_id = entry.get("instanceId")
+            grp_id = entry.get("grpId")
+            if instance_id is None or grp_id is None:
+                continue
+            zone_id = entry.get("zoneId")
+            owner_seat_id = entry.get("ownerSeatId")
+
+            # A diff can carry an object that already exists but has moved
+            # zones (e.g. cast from hand) — drop its stale membership first,
+            # since the zones array isn't guaranteed to be resent for every
+            # zone a move touches.
+            previous = self.objects.get(instance_id)
+            if previous is not None and previous.zone_id not in (None, zone_id):
+                old_zone = self.zones.get(previous.zone_id)
+                if old_zone is not None:
+                    old_zone.object_instance_ids.discard(instance_id)
+
+            self.objects[instance_id] = _Object(grp_id, owner_seat_id, zone_id)
+            if zone_id is not None:
+                zone = self.zones.setdefault(
+                    zone_id, _Zone(zone_type=None, owner_seat_id=owner_seat_id)
+                )
+                zone.object_instance_ids.add(instance_id)
+
+    def _remove_object(self, instance_id: int) -> None:
+        obj = self.objects.pop(instance_id, None)
+        if obj is None:
+            return
+        for zone in self.zones.values():
+            zone.object_instance_ids.discard(instance_id)
+
+    def finalize(self, match_id: str) -> GameRecord:
+        opening_hand = self.opening_hand if self.opening_hand is not None else self._last_hand_snapshot
+        return GameRecord(
+            match_id=match_id,
+            game_number=self.game_number,
+            opening_hand=frozenset(opening_hand),
+            drawn=frozenset(self.drawn),
+        )
+
+
+def parse_games(span_text: str, *, match_id: str, our_seat_id: int) -> list[GameRecord]:
+    """Reconstruct each game's opening hand and later draws for our own seat.
+
+    A GameStateType_Full message starts a new game (finalizing whichever game
+    was previously in progress first) — this keys state by game_number for
+    forward compatibility with a Bo3 match, though only Bo1 data has actually
+    been observed so far.
+    """
+    records: list[GameRecord] = []
+    tracker: _GameTracker | None = None
+
+    for message in _iter_game_state_messages(span_text):
+        state_type = message.get("type")
+        if state_type == "GameStateType_Full":
+            if tracker is not None:
+                records.append(tracker.finalize(match_id))
+            tracker = _GameTracker(our_seat_id)
+            tracker.apply_full(message)
+        elif state_type == "GameStateType_Diff":
+            if tracker is None:
+                log.debug("Diff message before any Full message, skipping")
+                continue
+            tracker.apply_diff(message)
+
+    if tracker is not None:
+        records.append(tracker.finalize(match_id))
+
+    return records
