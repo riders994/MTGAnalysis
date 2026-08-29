@@ -30,6 +30,9 @@ class GameRecord:
     game_number: int
     opening_hand: frozenset[int]  # grpIds
     drawn: frozenset[int]  # grpIds drawn after the opening hand
+    final_hand: frozenset[int]  # grpIds still in hand at the last known state
+    mulligan_count: int
+    last_turn: int | None  # None means the game ended before turnInfo ever appeared
 
 
 @dataclass
@@ -78,19 +81,19 @@ class _GameTracker:
         self.hand_zone_id: int | None = None
         self.opening_hand: set[int] | None = None
         self.drawn: set[int] = set()
+        self.mulligan_count = 0
+        # None until the first turnInfo message arrives — a game that ends
+        # (e.g. an early concession) before this ever appears is turn 0: not
+        # even a single turn was completed.
+        self.last_turn: int | None = None
         # Continuously updated hand contents, used both to snapshot the
-        # opening hand right before the first draw, and as a fallback if the
-        # game ends (e.g. a very early concession) before any draw happens.
+        # opening hand right before the first draw, and as the final-hand /
+        # no-draw-fallback value once the game ends.
         self._last_hand_snapshot: set[int] = set()
 
-    def apply_full(self, message: dict) -> None:
-        game_info = message.get("gameInfo") or {}
-        self.game_number = game_info.get("gameNumber", 1)
+    def _seed_zones_and_objects(self, message: dict) -> None:
         self.zones = {}
         self.objects = {}
-        self.opening_hand = None
-        self.drawn = set()
-
         self._merge_zones(message.get("zones"))
         self._merge_objects(message.get("gameObjects"))
         self.hand_zone_id = next(
@@ -101,10 +104,45 @@ class _GameTracker:
             ),
             None,
         )
+
+    def apply_full(self, message: dict) -> None:
+        game_info = message.get("gameInfo") or {}
+        self.game_number = game_info.get("gameNumber", 1)
+        self.opening_hand = None
+        self.drawn = set()
+        self.mulligan_count = 0
+        self.last_turn = None
+
+        self._seed_zones_and_objects(message)
         self._last_hand_snapshot = self._current_hand_grp_ids()
+        self._merge_players(message.get("players"))
+
+    def reseed(self, message: dict) -> None:
+        """A mid-game reconnect resync: another Full snapshot for the SAME
+        gameNumber (confirmed against real archived data — stage is
+        GameStage_Play, not GameStage_Start). Rebuild zone/object state from
+        it, but keep opening_hand/drawn/mulligan_count/last_turn accumulated
+        so far — this isn't a new game, so that history must survive.
+
+        Any card visible in this snapshot's hand that isn't already known as
+        the opening hand or an earlier draw must have been drawn during the
+        resync gap (no draw annotation was seen for it, since resync
+        snapshots carry no annotations) — counted as drawn rather than lost.
+        """
+        self._seed_zones_and_objects(message)
+        fresh_hand = self._current_hand_grp_ids()
+        already_known = (self.opening_hand or set()) | self.drawn
+        self.drawn |= fresh_hand - already_known
+        self._last_hand_snapshot = fresh_hand
+        self._merge_players(message.get("players"))
 
     def apply_diff(self, message: dict) -> None:
         drawn_instance_ids = self._draw_instance_ids(message.get("annotations"))
+        self._merge_players(message.get("players"))
+
+        turn_info = message.get("turnInfo") or {}
+        if "turnNumber" in turn_info:
+            self.last_turn = turn_info["turnNumber"]
 
         # Opening hand is whatever was in hand right before the FIRST real
         # draw — this naturally excludes any mulliganed-away hand, since a
@@ -143,6 +181,13 @@ class _GameTracker:
                 continue
             drawn_ids.extend(annotation.get("affectedIds") or [])
         return drawn_ids
+
+    def _merge_players(self, players: list[dict] | None) -> None:
+        """A players[] update can carry just one player (e.g. their own
+        mulligan decision), not always both — only ours is of interest."""
+        for entry in players or []:
+            if entry.get("systemSeatNumber") == self.our_seat_id and "mulliganCount" in entry:
+                self.mulligan_count = entry["mulliganCount"]
 
     def _current_hand_grp_ids(self) -> set[int]:
         if self.hand_zone_id is None:
@@ -211,16 +256,22 @@ class _GameTracker:
             game_number=self.game_number,
             opening_hand=frozenset(opening_hand),
             drawn=frozenset(self.drawn),
+            final_hand=frozenset(self._last_hand_snapshot),
+            mulligan_count=self.mulligan_count,
+            last_turn=self.last_turn,
         )
 
 
 def parse_games(span_text: str, *, match_id: str, our_seat_id: int) -> list[GameRecord]:
     """Reconstruct each game's opening hand and later draws for our own seat.
 
-    A GameStateType_Full message starts a new game (finalizing whichever game
-    was previously in progress first) — this keys state by game_number for
-    forward compatibility with a Bo3 match, though only Bo1 data has actually
-    been observed so far.
+    A GameStateType_Full message with a NEW gameNumber starts a new game
+    (finalizing whichever game was previously in progress first) — this keys
+    state by game_number for a genuine Bo3 match. But a Full message can also
+    arrive mid-game after a reconnect, carrying the SAME gameNumber as the
+    game already in progress (confirmed against real archived data: stage is
+    GameStage_Play, not GameStage_Start) — that's a resync, not a new game,
+    and must not reset accumulated opening_hand/drawn/mulligan/turn state.
     """
     records: list[GameRecord] = []
     tracker: _GameTracker | None = None
@@ -228,10 +279,14 @@ def parse_games(span_text: str, *, match_id: str, our_seat_id: int) -> list[Game
     for message in _iter_game_state_messages(span_text):
         state_type = message.get("type")
         if state_type == "GameStateType_Full":
-            if tracker is not None:
-                records.append(tracker.finalize(match_id))
-            tracker = _GameTracker(our_seat_id)
-            tracker.apply_full(message)
+            game_number = (message.get("gameInfo") or {}).get("gameNumber", 1)
+            if tracker is not None and tracker.game_number == game_number:
+                tracker.reseed(message)
+            else:
+                if tracker is not None:
+                    records.append(tracker.finalize(match_id))
+                tracker = _GameTracker(our_seat_id)
+                tracker.apply_full(message)
         elif state_type == "GameStateType_Diff":
             if tracker is None:
                 log.debug("Diff message before any Full message, skipping")

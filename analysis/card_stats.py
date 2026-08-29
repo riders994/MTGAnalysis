@@ -16,9 +16,15 @@ from collector.config import Config
 from .carddb import CardDbUnavailable, load_card_names
 from .changelog import assign_slugs
 from .deck_changelog import collect_saves
-from .game_state import parse_games
-from .match_events import join_deck_to_matches
+from .game_state import GameRecord, parse_games
+from .match_events import GameOutcome, join_deck_to_matches
 from .sessions import iter_sessions, read_text
+
+# Real archived concedes cluster at turn 0 (conceded before turnInfo ever
+# appeared — during the mulligan/opening-hand review), 2, and 4, then jump to
+# 6+. This cutoff is a judgment call, not a rule from Arena or 17lands; tune
+# it if a larger sample doesn't bear the pattern out.
+EARLY_FORFEIT_MAX_TURN = 4
 
 
 @dataclass
@@ -40,6 +46,9 @@ class DeckStats:
     format: str | None
     gp: int = 0
     gp_wins: int = 0
+    mulligan_games: int = 0  # games where we took at least one mulligan
+    early_forfeit_games: int = 0  # games WE conceded by EARLY_FORFEIT_MAX_TURN (or turn 0)
+    early_forfeit_hand_tallies: dict[int, int] = field(default_factory=dict)  # card_id -> times stuck
     card_tallies: dict[int, CardTally] = field(default_factory=dict)
 
 
@@ -93,6 +102,9 @@ def collect_card_stats(cfg: Config) -> tuple[dict[str, DeckStats], Summary]:
             games = parse_games(span_text, match_id=outcome.match_id, our_seat_id=outcome.our_seat_id)
             for game in games:
                 summary.games_parsed += 1
+                if game.mulligan_count > 0:
+                    deck_stats.mulligan_games += 1
+
                 for card_id in decklist_ids[outcome.deck_id]:
                     tally = deck_stats.card_tallies.setdefault(card_id, CardTally())
                     if card_id in game.opening_hand:
@@ -108,7 +120,23 @@ def collect_card_stats(cfg: Config) -> tuple[dict[str, DeckStats], Summary]:
                         if outcome.won:
                             tally.gns_wins += 1
 
+                if _is_early_self_forfeit(outcome, game):
+                    deck_stats.early_forfeit_games += 1
+                    for card_id in game.final_hand:
+                        if card_id in decklist_ids[outcome.deck_id]:
+                            deck_stats.early_forfeit_hand_tallies[card_id] = (
+                                deck_stats.early_forfeit_hand_tallies.get(card_id, 0) + 1
+                            )
+
     return stats, summary
+
+
+def _is_early_self_forfeit(outcome: GameOutcome, game: GameRecord) -> bool:
+    """True if WE gave up on this game by EARLY_FORFEIT_MAX_TURN (or before
+    turn 1 ever started). A concession always defeats the conceder, so
+    reason == Concede and we lost means it was ours, not the opponent's."""
+    we_conceded = outcome.reason == "ResultReason_Concede" and not outcome.won
+    return we_conceded and (game.last_turn is None or game.last_turn <= EARLY_FORFEIT_MAX_TURN)
 
 
 def run(cfg: Config) -> Summary:

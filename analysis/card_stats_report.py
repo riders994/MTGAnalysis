@@ -34,12 +34,38 @@ def _card_row(card_id: int, tally: CardTally, names: CardNames) -> tuple[str, st
     return name, row
 
 
+def _render_early_forfeits(stats: DeckStats, names: CardNames) -> str:
+    heading = (
+        "## Early Forfeits\n\n"
+        "_Games we conceded by turn 4 (or before turn 1 ever started — "
+        "\"turn 0\", conceded during the mulligan/opening-hand review). Cards "
+        "that show up often here were sitting dead in hand when we gave up — "
+        "worth reconsidering, not just cards with a bad GIH WR._\n\n"
+    )
+
+    if not stats.early_forfeit_games:
+        return heading + "_No early forfeits recorded._\n"
+
+    rows = sorted(
+        ((names[card_id], count) for card_id, count in stats.early_forfeit_hand_tallies.items()),
+        key=lambda row: (-row[1], row[0]),
+    )
+    table_rows = "\n".join(f"| {name} | {count} |" for name, count in rows)
+    table = (
+        f"{stats.early_forfeit_games} of {stats.gp} game(s) — cards still unplayed in hand "
+        "when we conceded, most-frequent first:\n\n"
+        "| Card | Times Stuck |\n|---|---|\n" + table_rows + "\n"
+    )
+    return heading + table
+
+
 def render_card_stats(stats: DeckStats, names: CardNames) -> str:
     header = (
         f"# {stats.name}\n\n"
         f"- **Deck ID:** `{stats.deck_id}`\n"
         f"- **Format:** {stats.format or 'unknown'}\n"
-        f"- **Games Played:** {_rate(stats.gp_wins, stats.gp)}\n\n"
+        f"- **Games Played:** {_rate(stats.gp_wins, stats.gp)}\n"
+        f"- **Mulligan Rate:** {_rate(stats.mulligan_games, stats.gp)}\n\n"
         "_Personal stats from this account's own games only — samples are "
         "small by nature, read the raw N alongside every rate. Brawl "
         "commanders and unused sideboard cards will trivially show 0% seen, "
@@ -47,13 +73,14 @@ def render_card_stats(stats: DeckStats, names: CardNames) -> str:
     )
 
     if not stats.card_tallies:
-        return header + "_No per-card data yet._\n"
+        body = "_No per-card data yet._\n"
+    else:
+        rows = sorted(
+            _card_row(card_id, tally, names) for card_id, tally in stats.card_tallies.items()
+        )
+        body = (
+            "| Card | OH WR | GD WR | GIH WR | GNS WR | IIH |\n"
+            "|---|---|---|---|---|---|\n" + "\n".join(row for _, row in rows) + "\n"
+        )
 
-    rows = sorted(
-        _card_row(card_id, tally, names) for card_id, tally in stats.card_tallies.items()
-    )
-    table = (
-        "| Card | OH WR | GD WR | GIH WR | GNS WR | IIH |\n"
-        "|---|---|---|---|---|---|\n" + "\n".join(row for _, row in rows) + "\n"
-    )
-    return header + table
+    return header + body + "\n" + _render_early_forfeits(stats, names)

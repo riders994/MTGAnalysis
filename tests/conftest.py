@@ -284,6 +284,28 @@ def gre_diff_draw_line(
     return _gre_line([message], **kwargs)
 
 
+def gre_diff_turn_line(*, turn_number: int, **kwargs) -> str:
+    """A synthetic diff carrying only a turnInfo update."""
+    message = {
+        "type": "GREMessageType_GameStateMessage",
+        "gameStateMessage": {"type": "GameStateType_Diff", "turnInfo": {"turnNumber": turn_number}},
+    }
+    return _gre_line([message], **kwargs)
+
+
+def gre_diff_mulligan_count_line(*, our_seat_id: int, mulligan_count: int, **kwargs) -> str:
+    """A synthetic diff carrying only a players[] mulliganCount update, as
+    real MulliganReq/Resp exchanges do (one player at a time, not both)."""
+    message = {
+        "type": "GREMessageType_GameStateMessage",
+        "gameStateMessage": {
+            "type": "GameStateType_Diff",
+            "players": [{"systemSeatNumber": our_seat_id, "mulliganCount": mulligan_count}],
+        },
+    }
+    return _gre_line([message], **kwargs)
+
+
 def gre_diff_move_line(*, instance_id: int, grp_id: int, new_zone_id: int, owner_seat_id: int, **kwargs) -> str:
     """A synthetic diff moving an existing object to a new zone (e.g. cast
     from hand), with no accompanying zones-array update for the old zone —

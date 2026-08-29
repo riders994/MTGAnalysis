@@ -39,6 +39,10 @@ class GameOutcome:
     won: bool
     session_id: str
     our_seat_id: int
+    reason: str | None  # e.g. "ResultReason_Concede" — combined with won, tells
+    # you whether WE conceded (reason is Concede and won is False) or the
+    # opponent did (reason is Concede and won is True); a concession always
+    # defeats the conceder.
     span: tuple[int, int]  # bounds this match's GRE traffic within the same log_text
 
 
@@ -172,6 +176,7 @@ def join_deck_to_matches(log_text: str, *, session_id: str) -> list[GameOutcome]
                     won=result.get("winningTeamId") == match_pending.our_team_id,
                     session_id=session_id,
                     our_seat_id=match_pending.our_seat_id,
+                    reason=result.get("reason"),
                     span=(match_pending.span_start, offset),
                 )
             )

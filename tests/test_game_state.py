@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from analysis.game_state import parse_games
 
-from conftest import gre_diff_draw_line, gre_diff_mulligan_line, gre_diff_move_line, gre_full_line
+from conftest import (
+    gre_diff_draw_line,
+    gre_diff_mulligan_count_line,
+    gre_diff_mulligan_line,
+    gre_diff_move_line,
+    gre_diff_turn_line,
+    gre_full_line,
+)
 
 OUR_SEAT = 2
 HAND_ZONE = 35
@@ -117,6 +124,68 @@ def test_two_full_messages_produce_two_game_records():
     assert records[0].opening_hand == frozenset({100})
     assert records[1].game_number == 2
     assert records[1].opening_hand == frozenset({200})
+
+
+def test_mulligan_count_and_last_turn_and_final_hand_are_tracked():
+    text = (
+        gre_full_line(our_seat_id=OUR_SEAT, hand_zone_id=HAND_ZONE, hand=[(1, 100)])
+        + gre_diff_mulligan_count_line(our_seat_id=OUR_SEAT, mulligan_count=1)
+        + gre_diff_draw_line(
+            drawn_instance_id=2, drawn_grp_id=101, hand_zone_id=HAND_ZONE, our_seat_id=OUR_SEAT
+        )
+        + gre_diff_turn_line(turn_number=3)
+    )
+
+    record = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)[0]
+
+    assert record.mulligan_count == 1
+    assert record.last_turn == 3
+    assert record.final_hand == frozenset({100, 101})
+
+
+def test_last_turn_is_none_when_no_turn_info_ever_arrives():
+    text = gre_full_line(our_seat_id=OUR_SEAT, hand_zone_id=HAND_ZONE, hand=[(1, 100)])
+
+    record = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)[0]
+
+    assert record.last_turn is None
+
+
+def test_midgame_resync_with_same_game_number_is_not_a_new_game():
+    # A real reconnect resync: a second Full message with the SAME
+    # gameNumber, well after the game has started (stage=Play, not Start in
+    # the real data) — confirmed against a real archived match. Accumulated
+    # opening_hand/drawn/mulligan/turn state must survive, and this must
+    # produce exactly one GameRecord, not two.
+    text = (
+        gre_full_line(
+            our_seat_id=OUR_SEAT, hand_zone_id=HAND_ZONE, hand=[(1, 100)], game_number=1
+        )
+        + gre_diff_mulligan_count_line(our_seat_id=OUR_SEAT, mulligan_count=1)
+        + gre_diff_draw_line(
+            drawn_instance_id=2, drawn_grp_id=101, hand_zone_id=HAND_ZONE, our_seat_id=OUR_SEAT
+        )
+        + gre_diff_turn_line(turn_number=5)
+        # Resync: same game_number=1. Hand now also contains a new card (3,
+        # grpId 102) that arrived during the reconnect gap with no draw
+        # annotation — it should be inferred as drawn, not lost.
+        + gre_full_line(
+            our_seat_id=OUR_SEAT,
+            hand_zone_id=HAND_ZONE,
+            hand=[(1, 100), (2, 101), (3, 102)],
+            game_number=1,
+        )
+    )
+
+    records = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.opening_hand == frozenset({100})
+    assert record.drawn == frozenset({101, 102})
+    assert record.mulligan_count == 1
+    assert record.last_turn == 5
+    assert record.final_hand == frozenset({100, 101, 102})
 
 
 def test_opponent_draw_into_their_own_hand_zone_is_ignored():
