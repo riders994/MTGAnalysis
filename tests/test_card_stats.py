@@ -12,6 +12,7 @@ from conftest import (
     deck_upsert_line,
     event_set_deck_response_line,
     gre_diff_draw_line,
+    gre_diff_mulligan_line,
     gre_diff_turn_line,
     gre_full_line,
     match_room_state_completed_line,
@@ -159,6 +160,55 @@ def test_per_card_stats_from_gre_traffic(cfg, tmp_path):
     assert full_summary.decks_written == ["lagaan.md"]
     assert "Island" in content and "100% (1/1)" in content
     assert "No per-card data yet." not in content
+
+
+def test_mulliganed_hand_tallied_and_rendered(cfg, tmp_path):
+    """Cards sent back on a mulligan are tallied per-card, distinct from
+    the deck-level Mulligan Rate — and from OH, which only covers the hand
+    we kept."""
+    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island", 75021: "Plains", 96080: "Sol Ring"})
+
+    text = (
+        deck_upsert_line(
+            "deck-abc", "Lagaan", version="1",
+            main_deck=[(75022, 1), (75021, 1), (96080, 1)],
+        )
+        + event_set_deck_response_line("course-1", "deck-abc", "Lagaan")
+        + match_room_state_playing_line(
+            "match-1", [(OUR_ID, 1, 1), (OPPONENT_ID, 2, 2)], our_id=OUR_ID
+        )
+        + gre_full_line(
+            our_seat_id=1, hand_zone_id=35,
+            hand=[(1, 75022), (2, 75021), (3, 96080)],  # all three, sent back
+        )
+        + gre_diff_mulligan_line(
+            old_instance_ids=[1, 2, 3],
+            new_hand=[(11, 75021)],  # kept hand: Plains only
+            hand_zone_id=35,
+            our_seat_id=1,
+            mulligan_count=1,
+        )
+        + gre_diff_draw_line(
+            drawn_instance_id=12, drawn_grp_id=75022, hand_zone_id=35, our_seat_id=1
+        )  # Island drawn later
+        + match_room_state_completed_line("match-1", winning_team_id=1, our_id=OUR_ID)
+    )
+    _write_session(cfg, "20260817T192832", text)
+
+    stats, _ = card_stats.collect_card_stats(cfg)
+
+    deck_stats = stats["Lagaan"]
+    assert deck_stats.mulligan_games == 1
+    assert deck_stats.mulliganed_hand_tallies == {75022: 1, 75021: 1, 96080: 1}
+    # The kept hand (Plains) is scored as OH, not folded into the mulligan tally.
+    assert deck_stats.card_tallies[75021].oh == 1
+
+    full_summary = card_stats.run(cfg)
+    content = (cfg.archive_dir / "reports" / "card_stats" / "lagaan.md").read_text()
+    assert full_summary.decks_written == ["lagaan.md"]
+    assert "## Mulliganed Hands" in content
+    assert "| Sol Ring | 1 |" in content
+    assert "1 of 1 game(s) had at least one mulligan" in content
 
 
 def test_opponent_commander_tallied_and_rendered_for_brawl_deck(cfg, tmp_path):

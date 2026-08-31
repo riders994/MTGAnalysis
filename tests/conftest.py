@@ -304,28 +304,37 @@ def gre_full_line(
 
 
 def gre_diff_mulligan_line(
-    *, old_instance_ids, new_hand, hand_zone_id: int, our_seat_id: int, **kwargs
+    *,
+    old_instance_ids,
+    new_hand,
+    hand_zone_id: int,
+    our_seat_id: int,
+    mulligan_count: int | None = None,
+    **kwargs,
 ) -> str:
     """A synthetic mulligan diff: old hand deleted, fresh hand dealt — no
-    Draw annotation, matching the real London-mulligan replacement shape."""
-    message = {
-        "type": "GREMessageType_GameStateMessage",
-        "gameStateMessage": {
-            "type": "GameStateType_Diff",
-            "diffDeletedInstanceIds": list(old_instance_ids),
-            "zones": [
-                {
-                    "zoneId": hand_zone_id,
-                    "objectInstanceIds": [instance_id for instance_id, _ in new_hand],
-                }
-            ],
-            "gameObjects": [
-                {"instanceId": instance_id, "grpId": grp_id, "type": "GameObjectType_Card",
-                 "zoneId": hand_zone_id, "ownerSeatId": our_seat_id}
-                for instance_id, grp_id in new_hand
-            ],
-        },
+    Draw annotation, matching the real London-mulligan replacement shape.
+    mulligan_count, when given, adds the players[] bump to the SAME message
+    — confirmed real shape: a mulligan's count bump and its hand swap land
+    together in one diff, not two."""
+    state: dict = {
+        "type": "GameStateType_Diff",
+        "diffDeletedInstanceIds": list(old_instance_ids),
+        "zones": [
+            {
+                "zoneId": hand_zone_id,
+                "objectInstanceIds": [instance_id for instance_id, _ in new_hand],
+            }
+        ],
+        "gameObjects": [
+            {"instanceId": instance_id, "grpId": grp_id, "type": "GameObjectType_Card",
+             "zoneId": hand_zone_id, "ownerSeatId": our_seat_id}
+            for instance_id, grp_id in new_hand
+        ],
     }
+    if mulligan_count is not None:
+        state["players"] = [{"systemSeatNumber": our_seat_id, "mulliganCount": mulligan_count}]
+    message = {"type": "GREMessageType_GameStateMessage", "gameStateMessage": state}
     return _gre_line([message], **kwargs)
 
 

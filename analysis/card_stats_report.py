@@ -30,6 +30,31 @@ def _card_row(card_id: int, tally: CardTally, names: CardNames) -> tuple[str, st
     return name, row
 
 
+def _render_mulliganed_hands(stats: DeckStats | PeriodStats, names: CardNames) -> str:
+    heading = (
+        "## Mulliganed Hands\n\n"
+        "_Cards that showed up in a hand we sent back on a mulligan (not the "
+        "hand we kept — that's already covered by OH above). Cards that show "
+        "up often here were part of hands we judged unkeepable, which is a "
+        "different signal than a bad GIH WR._\n\n"
+    )
+
+    if not stats.mulligan_games:
+        return heading + "_No mulligans recorded._\n"
+
+    rows = sorted(
+        ((names[card_id], count) for card_id, count in stats.mulliganed_hand_tallies.items()),
+        key=lambda row: (-row[1], row[0]),
+    )
+    table_rows = "\n".join(f"| {name} | {count} |" for name, count in rows)
+    table = (
+        f"{stats.mulligan_games} of {stats.gp} game(s) had at least one mulligan — cards seen "
+        "in a sent-back hand, most-frequent first:\n\n"
+        "| Card | Times Sent Back |\n|---|---|\n" + table_rows + "\n"
+    )
+    return heading + table
+
+
 def _render_early_forfeits(stats: DeckStats | PeriodStats, names: CardNames) -> str:
     heading = (
         "## Early Forfeits\n\n"
@@ -129,6 +154,8 @@ def render_card_stats(stats: DeckStats, names: CardNames) -> str:
         header
         + body
         + "\n"
+        + _render_mulliganed_hands(stats, names)
+        + "\n"
         + _render_early_forfeits(stats, names)
         + _render_opponent_commanders(stats.opponent_commander_tallies, names)
     )
@@ -149,6 +176,8 @@ def render_period_stats(stats: PeriodStats, names: CardNames) -> str:
     return (
         header
         + body
+        + "\n"
+        + _render_mulliganed_hands(stats, names)
         + "\n"
         + _render_early_forfeits(stats, names)
         + _render_opponent_commanders(stats.opponent_commander_tallies, names)

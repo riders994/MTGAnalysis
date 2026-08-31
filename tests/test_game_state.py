@@ -61,6 +61,43 @@ def test_mulligan_before_first_draw_is_excluded_from_opening_hand():
     assert records[0].drawn == frozenset({202})
 
 
+def test_mulliganed_hand_is_captured_from_the_sent_back_hand():
+    # Confirmed real shape (session 20260817T194331): the mulliganCount bump
+    # and the hand swap land in the SAME diff. The sent-back hand (100, 101,
+    # 102) must be recorded, and must NOT include the kept hand (200, 201).
+    text = (
+        gre_full_line(
+            our_seat_id=OUR_SEAT,
+            hand_zone_id=HAND_ZONE,
+            hand=[(1, 100), (2, 101), (3, 102)],
+        )
+        + gre_diff_mulligan_line(
+            old_instance_ids=[1, 2, 3],
+            new_hand=[(11, 200), (12, 201)],
+            hand_zone_id=HAND_ZONE,
+            our_seat_id=OUR_SEAT,
+            mulligan_count=1,
+        )
+        + gre_diff_draw_line(
+            drawn_instance_id=13, drawn_grp_id=202, hand_zone_id=HAND_ZONE, our_seat_id=OUR_SEAT
+        )
+    )
+
+    record = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)[0]
+
+    assert record.mulligan_count == 1
+    assert record.mulliganed_hand_grp_ids == frozenset({100, 101, 102})
+    assert record.opening_hand == frozenset({200, 201})
+
+
+def test_no_mulligan_means_no_mulliganed_hand():
+    text = gre_full_line(our_seat_id=OUR_SEAT, hand_zone_id=HAND_ZONE, hand=[(1, 100)])
+
+    record = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)[0]
+
+    assert record.mulliganed_hand_grp_ids == frozenset()
+
+
 def test_no_draw_before_game_ends_falls_back_to_last_hand_snapshot():
     # An early concession before any draw happened — opening_hand must still
     # be populated from the Full message rather than lost.

@@ -63,6 +63,7 @@ class DeckStats:
     gp: int = 0
     gp_wins: int = 0
     mulligan_games: int = 0  # games where we took at least one mulligan
+    mulliganed_hand_tallies: dict[int, int] = field(default_factory=dict)  # card_id -> times sent back
     early_forfeit_games: int = 0  # games WE conceded by EARLY_FORFEIT_MAX_TURN (or turn 0)
     early_forfeit_hand_tallies: dict[int, int] = field(default_factory=dict)  # card_id -> times stuck
     card_tallies: dict[int, CardTally] = field(default_factory=dict)
@@ -119,12 +120,17 @@ def iter_outcomes(cfg: Config, summary: Summary) -> Iterator[tuple[GameOutcome, 
 
 def fold_game(target, game: GameRecord, outcome: GameOutcome, decklist_ids: set[int]) -> None:
     """Fold one parsed game into any stats object exposing mulligan_games/
-    card_tallies/early_forfeit_games/early_forfeit_hand_tallies/
-    opponent_commander_tallies — shared by DeckStats (all-time, one deck)
-    and reports.PeriodStats (one period, possibly several decks of the same
-    format)."""
+    mulliganed_hand_tallies/card_tallies/early_forfeit_games/
+    early_forfeit_hand_tallies/opponent_commander_tallies — shared by
+    DeckStats (all-time, one deck) and reports.PeriodStats (one period,
+    possibly several decks of the same format)."""
     if game.mulligan_count > 0:
         target.mulligan_games += 1
+        for card_id in game.mulliganed_hand_grp_ids:
+            if card_id in decklist_ids:
+                target.mulliganed_hand_tallies[card_id] = (
+                    target.mulliganed_hand_tallies.get(card_id, 0) + 1
+                )
 
     commander_early_concede = _is_early_self_forfeit(outcome, game, COMMANDER_EARLY_CONCEDE_MAX_TURN)
     for commander_id in game.opponent_commander_grp_ids:

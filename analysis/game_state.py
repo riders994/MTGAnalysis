@@ -49,6 +49,10 @@ class GameRecord:
     mulligan_count: int
     last_turn: int | None  # None means the game ended before turnInfo ever appeared
     opponent_commander_grp_ids: frozenset[int]  # empty outside Brawl (no Command Zone)
+    # Union of grpIds across every hand we sent back on a mulligan this game
+    # (not the hand we kept — that's opening_hand). Empty if mulligan_count
+    # is 0.
+    mulliganed_hand_grp_ids: frozenset[int]
 
 
 @dataclass
@@ -99,6 +103,11 @@ class _GameTracker:
         self.opening_hand: set[int] | None = None
         self.drawn: set[int] = set()
         self.mulligan_count = 0
+        # Union of grpIds across every hand sent back on a mulligan — each
+        # captured from _last_hand_snapshot at the moment mulligan_count is
+        # seen to increase, i.e. before that same diff's own zone/object
+        # changes replace it with the fresh hand.
+        self.mulliganed_hand_grp_ids: set[int] = set()
         # None until the first turnInfo message arrives — a game that ends
         # (e.g. an early concession) before this ever appears is turn 0: not
         # even a single turn was completed.
@@ -147,6 +156,7 @@ class _GameTracker:
         self.opening_hand = None
         self.drawn = set()
         self.mulligan_count = 0
+        self.mulliganed_hand_grp_ids = set()
         self.last_turn = None
         self.opponent_commander_grp_ids = set()
 
@@ -175,7 +185,17 @@ class _GameTracker:
 
     def apply_diff(self, message: dict) -> None:
         drawn_instance_ids = self._draw_instance_ids(message.get("annotations"))
+
+        # A mulligan's players[].mulliganCount bump and its hand-replacement
+        # (diffDeletedInstanceIds/zones/gameObjects) land in the SAME diff —
+        # confirmed against a real archived mulligan. So the hand sent back
+        # is still sitting in _last_hand_snapshot right up until this same
+        # message's own zone/object merge below overwrites it with the fresh
+        # hand; must be captured before that happens.
+        previous_mulligan_count = self.mulligan_count
         self._merge_players(message.get("players"))
+        if self.mulligan_count > previous_mulligan_count:
+            self.mulliganed_hand_grp_ids |= self._last_hand_snapshot
 
         turn_info = message.get("turnInfo") or {}
         if "turnNumber" in turn_info:
@@ -184,9 +204,8 @@ class _GameTracker:
         # Opening hand is whatever was in hand right before the FIRST real
         # draw — this naturally excludes any mulliganed-away hand, since a
         # mulligan's replacement happens via diffDeletedInstanceIds/zones/
-        # gameObjects before this point. Not empirically confirmed against a
-        # real mulligan end-to-end; players[].mulliganCount is the documented
-        # fallback/cross-check if this heuristic doesn't hold up.
+        # gameObjects before this point. Confirmed against a real archived
+        # mulligan (same match used to confirm the comment above).
         if drawn_instance_ids and self.opening_hand is None:
             self.opening_hand = set(self._last_hand_snapshot)
 
@@ -299,6 +318,7 @@ class _GameTracker:
             mulligan_count=self.mulligan_count,
             last_turn=self.last_turn,
             opponent_commander_grp_ids=frozenset(self.opponent_commander_grp_ids),
+            mulliganed_hand_grp_ids=frozenset(self.mulliganed_hand_grp_ids),
         )
 
 
