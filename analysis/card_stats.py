@@ -17,7 +17,7 @@ from collector.config import Config
 
 from .carddb import CardDbUnavailable, load_card_names
 from .changelog import assign_slugs
-from .deck_changelog import collect_saves
+from .deck_changelog import collect_saves, merge_saves_by_identity
 from .game_state import GameRecord, parse_games
 from .match_events import GameOutcome, join_deck_to_matches
 from .sessions import iter_sessions, read_text, session_datetime
@@ -57,7 +57,7 @@ class OpponentCommanderTally:
 
 @dataclass
 class DeckStats:
-    deck_id: str
+    deck_id: str  # latest raw Arena DeckId seen for this identity, display only — grouping uses name identity
     name: str
     format: str | None
     gp: int = 0
@@ -162,23 +162,25 @@ def fold_game(target, game: GameRecord, outcome: GameOutcome, decklist_ids: set[
 
 
 def collect_card_stats(cfg: Config) -> tuple[dict[str, DeckStats], Summary]:
-    by_deck_saves, _ = collect_saves(cfg)
+    raw_by_deck_saves, _ = collect_saves(cfg)
+    by_deck_saves, deck_id_to_canonical = merge_saves_by_identity(raw_by_deck_saves)
     summary = Summary()
 
     stats: dict[str, DeckStats] = {}
     decklist_ids: dict[str, set[int]] = {}
-    for deck_id, saves in by_deck_saves.items():
+    for canonical, saves in by_deck_saves.items():
         latest = saves[-1]
-        stats[deck_id] = DeckStats(
-            deck_id=deck_id,
+        stats[canonical] = DeckStats(
+            deck_id=latest.deck_id,
             name=latest.name,
             format=latest.format,
             own_commander_grp_ids=own_commander_ids(latest),
         )
-        decklist_ids[deck_id] = decklist_card_ids(latest)
+        decklist_ids[canonical] = decklist_card_ids(latest)
 
     for outcome, text, _dt in iter_outcomes(cfg, summary):
-        deck_stats = stats.get(outcome.deck_id)
+        canonical = deck_id_to_canonical.get(outcome.deck_id)
+        deck_stats = stats.get(canonical) if canonical is not None else None
         if deck_stats is None:
             summary.warnings.append(
                 f"match in session {outcome.session_id} bound to deck "
@@ -194,7 +196,7 @@ def collect_card_stats(cfg: Config) -> tuple[dict[str, DeckStats], Summary]:
         games = parse_games(span_text, match_id=outcome.match_id, our_seat_id=outcome.our_seat_id)
         for game in games:
             summary.games_parsed += 1
-            fold_game(deck_stats, game, outcome, decklist_ids[outcome.deck_id])
+            fold_game(deck_stats, game, outcome, decklist_ids[canonical])
 
     return stats, summary
 
@@ -220,15 +222,15 @@ def run(cfg: Config) -> Summary:
         summary.warnings.append(str(exc))
         return summary
 
-    card_stats_dir = cfg.archive_dir / "card_stats"
+    card_stats_dir = cfg.archive_dir / "reports" / "card_stats"
     card_stats_dir.mkdir(parents=True, exist_ok=True)
 
-    deck_names = {deck_id: deck_stats.name for deck_id, deck_stats in stats.items()}
+    deck_names = {canonical: deck_stats.name for canonical, deck_stats in stats.items()}
     slugs, collision_warnings = assign_slugs(deck_names)
     summary.warnings.extend(collision_warnings)
 
-    for deck_id, deck_stats in stats.items():
-        dest = card_stats_dir / f"{slugs[deck_id]}.md"
+    for canonical, deck_stats in stats.items():
+        dest = card_stats_dir / f"{slugs[canonical]}.md"
         dest.write_text(render_card_stats(deck_stats, names), encoding="utf-8")
         summary.decks_written.append(dest.name)
 

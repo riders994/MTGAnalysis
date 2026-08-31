@@ -80,7 +80,7 @@ def test_initial_save_and_later_diff(cfg, tmp_path):
     assert summary.decks_written == ["lagaan.md"]
     assert summary.warnings == []
 
-    content = (cfg.archive_dir / "changelogs" / "lagaan.md").read_text()
+    content = (cfg.archive_dir / "reports" / "changelogs" / "lagaan.md").read_text()
 
     assert "# Lagaan" in content
     assert "`deck-abc`" in content
@@ -100,20 +100,43 @@ def test_initial_save_and_later_diff(cfg, tmp_path):
     assert "+ 7 Plains" in content
 
 
-def test_name_collision_between_two_decks_is_disambiguated(cfg, tmp_path):
+def test_deck_reissued_under_same_name_merges_into_one_history(cfg, tmp_path):
+    """A deck deleted in Arena and recreated under the same name gets a new
+    DeckId — there's no delete event to key off, so same exact name is
+    treated as the same deck, reissued, not a genuine collision."""
     _write_carddb_snapshot(cfg, tmp_path)
 
-    first = deck_upsert_line("deck-one", "Same Name", version="1", main_deck=[(75022, 1)])
-    second = deck_upsert_line("deck-two", "Same Name", version="1", main_deck=[(75021, 1)])
+    first = deck_upsert_line(
+        "deck-one", "Same Name", version="1", main_deck=[(75022, 1), (75021, 1)]
+    )
+    second = deck_upsert_line(
+        "deck-two", "Same Name", version="1", main_deck=[(75021, 1), (1, 1)]
+    )
     _write_session(cfg, "20260817T100000", first, suffix="aaaaaaaa")
     _write_session(cfg, "20260817T110000", second, suffix="bbbbbbbb")
 
     summary = deck_changelog.run(cfg)
 
-    assert len(summary.decks_written) == 2
-    assert "same-name.md" in summary.decks_written
-    assert any(name != "same-name.md" for name in summary.decks_written)
-    assert summary.warnings  # collision surfaced, not silently overwritten
+    assert summary.decks_written == ["same-name.md"]
+    assert summary.warnings == []  # no collision — this is the same deck, reissued
+
+    content = (cfg.archive_dir / "reports" / "changelogs" / "same-name.md").read_text()
+
+    # Both deck_ids' saves land in one continuous, chronologically ordered
+    # history: two "v1" entries (one per deck_id), newest first.
+    assert content.count("### v1") == 2
+    first_v1 = content.index("### v1")
+    second_v1 = content.index("### v1", first_v1 + 1)
+    assert "session 20260817T110000" in content[first_v1:second_v1]
+    assert "session 20260817T100000" in content[second_v1:]
+
+    # The reissued deck's entry diffs against the deleted deck's last state,
+    # not a reset to "everything added": Plains is unchanged across the
+    # boundary (no +/- line for it), Island is dropped, Mox Opal is added.
+    boundary_entry = content[first_v1:second_v1]
+    assert "Plains" not in boundary_entry
+    assert "- 1 Island" in boundary_entry
+    assert "+ 1 Mox Opal" in boundary_entry
 
 
 def test_no_deck_events_writes_nothing(cfg, tmp_path):

@@ -77,13 +77,13 @@ def test_won_match_reported_with_no_per_card_data_yet(cfg, tmp_path):
 
     assert summary.sessions_scanned == 1
     assert summary.matches_found == 1
-    assert stats["deck-abc"].gp == 1
-    assert stats["deck-abc"].gp_wins == 1
-    assert stats["deck-abc"].card_tallies == {}
+    assert stats["Lagaan"].gp == 1
+    assert stats["Lagaan"].gp_wins == 1
+    assert stats["Lagaan"].card_tallies == {}
 
     full_summary = card_stats.run(cfg)
     assert full_summary.decks_written == ["lagaan.md"]
-    content = (cfg.archive_dir / "card_stats" / "lagaan.md").read_text()
+    content = (cfg.archive_dir / "reports" / "card_stats" / "lagaan.md").read_text()
     assert "# Lagaan" in content
     assert "100% (1/1)" in content  # Games Played line
     assert "No per-card data yet." in content
@@ -98,8 +98,8 @@ def test_lost_match_win_rate_is_zero(cfg, tmp_path):
 
     stats, _ = card_stats.collect_card_stats(cfg)
 
-    assert stats["deck-abc"].gp == 1
-    assert stats["deck-abc"].gp_wins == 0
+    assert stats["Lagaan"].gp == 1
+    assert stats["Lagaan"].gp_wins == 0
 
 
 def test_match_bound_to_unknown_deck_warns_and_is_skipped(cfg, tmp_path):
@@ -149,13 +149,13 @@ def test_per_card_stats_from_gre_traffic(cfg, tmp_path):
     stats, summary = card_stats.collect_card_stats(cfg)
 
     assert summary.games_parsed == 1
-    tallies = stats["deck-abc"].card_tallies
+    tallies = stats["Lagaan"].card_tallies
     assert tallies[75022].oh == 1 and tallies[75022].oh_wins == 1
     assert tallies[75021].gd == 1 and tallies[75021].gd_wins == 1
     assert tallies[96080].gns == 1 and tallies[96080].gns_wins == 1
 
     full_summary = card_stats.run(cfg)
-    content = (cfg.archive_dir / "card_stats" / "lagaan.md").read_text()
+    content = (cfg.archive_dir / "reports" / "card_stats" / "lagaan.md").read_text()
     assert full_summary.decks_written == ["lagaan.md"]
     assert "Island" in content and "100% (1/1)" in content
     assert "No per-card data yet." not in content
@@ -188,13 +188,13 @@ def test_opponent_commander_tallied_and_rendered_for_brawl_deck(cfg, tmp_path):
 
     stats, _ = card_stats.collect_card_stats(cfg)
 
-    tallies = stats["deck-abc"].opponent_commander_tallies
+    tallies = stats["Lagaan"].opponent_commander_tallies
     assert tallies[96080].games == 1
     assert tallies[96080].wins == 1
     assert 90302 not in tallies  # our own commander is never tallied as an opponent
 
     full_summary = card_stats.run(cfg)
-    content = (cfg.archive_dir / "card_stats" / "lagaan.md").read_text()
+    content = (cfg.archive_dir / "reports" / "card_stats" / "lagaan.md").read_text()
     assert full_summary.decks_written == ["lagaan.md"]
     assert "## Opponent Commanders" in content
     assert "Sol Ring" in content
@@ -230,7 +230,7 @@ def test_opponent_commander_early_concede_uses_turn_6_not_turn_4_cutoff(cfg, tmp
     _write_session(cfg, "20260817T192832", text)
 
     stats, _ = card_stats.collect_card_stats(cfg)
-    deck_stats = stats["deck-abc"]
+    deck_stats = stats["Lagaan"]
 
     # Turn 6 is past EARLY_FORFEIT_MAX_TURN (4) — the card-in-hand tracker
     # doesn't count it...
@@ -241,7 +241,7 @@ def test_opponent_commander_early_concede_uses_turn_6_not_turn_4_cutoff(cfg, tmp
     assert tally.early_concedes == 1
 
     card_stats.run(cfg)
-    content = (cfg.archive_dir / "card_stats" / "lagaan.md").read_text()
+    content = (cfg.archive_dir / "reports" / "card_stats" / "lagaan.md").read_text()
     assert "**Commander with most early concedes:** Sol Ring (1 of 1 game(s))" in content
 
 
@@ -254,7 +254,7 @@ def test_non_brawl_deck_report_omits_opponent_commanders_section(cfg, tmp_path):
     _write_session(cfg, "20260817T192832", text)
 
     card_stats.run(cfg)
-    content = (cfg.archive_dir / "card_stats" / "lagaan.md").read_text()
+    content = (cfg.archive_dir / "reports" / "card_stats" / "lagaan.md").read_text()
 
     assert "Opponent Commanders" not in content
 
@@ -271,7 +271,7 @@ def test_own_commander_grp_ids_populated_from_command_zone(cfg, tmp_path):
 
     stats, _ = card_stats.collect_card_stats(cfg)
 
-    assert stats["deck-abc"].own_commander_grp_ids == frozenset({90302})
+    assert stats["Lagaan"].own_commander_grp_ids == frozenset({90302})
 
 
 def test_own_commander_grp_ids_empty_for_non_brawl_deck(cfg, tmp_path):
@@ -283,7 +283,7 @@ def test_own_commander_grp_ids_empty_for_non_brawl_deck(cfg, tmp_path):
 
     stats, _ = card_stats.collect_card_stats(cfg)
 
-    assert stats["deck-abc"].own_commander_grp_ids == frozenset()
+    assert stats["Lagaan"].own_commander_grp_ids == frozenset()
 
 
 def test_own_commander_grp_ids_includes_both_partner_commanders(cfg, tmp_path):
@@ -298,7 +298,33 @@ def test_own_commander_grp_ids_includes_both_partner_commanders(cfg, tmp_path):
 
     stats, _ = card_stats.collect_card_stats(cfg)
 
-    assert stats["deck-abc"].own_commander_grp_ids == frozenset({90302, 96080})
+    assert stats["Lagaan"].own_commander_grp_ids == frozenset({90302, 96080})
+
+
+def test_deck_reissued_under_same_name_keeps_all_time_stats_continuous(cfg, tmp_path):
+    """Delete+recreate under the same name gets a new deck_id from Arena —
+    the all-time report must keep counting across that boundary, not reset."""
+    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
+    first_match = _match_session_text(
+        "deck-one", "Foo", course_id="course-1", match_id="match-1", winning_team_id=1
+    )
+    _write_session(cfg, "20260817T100000", first_match, suffix="aaaaaaaa")
+
+    second_match = _match_session_text(
+        "deck-two", "Foo", course_id="course-2", match_id="match-2", winning_team_id=2
+    )
+    _write_session(cfg, "20260817T110000", second_match, suffix="bbbbbbbb")
+
+    stats, summary = card_stats.collect_card_stats(cfg)
+
+    assert summary.matches_found == 2
+    assert stats["Foo"].gp == 2
+    assert stats["Foo"].gp_wins == 1
+
+    full_summary = card_stats.run(cfg)
+    assert full_summary.decks_written == ["foo.md"]
+    content = (cfg.archive_dir / "reports" / "card_stats" / "foo.md").read_text()
+    assert "50% (1/2)" in content  # Games Played line
 
 
 def test_missing_carddb_surfaces_as_warning_not_exception(cfg):

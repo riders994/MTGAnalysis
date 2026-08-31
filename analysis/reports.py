@@ -33,7 +33,7 @@ from .card_stats import (
     iter_outcomes,
 )
 from .changelog import assign_slugs, slugify
-from .deck_changelog import collect_saves
+from .deck_changelog import collect_saves, merge_saves_by_identity
 from .format_groups import classify_format
 from .game_state import parse_games
 from .seasons import Season, load_seasons, season_for
@@ -83,32 +83,35 @@ def collect_period_stats(
     cfg: Config,
 ) -> tuple[dict[tuple[str, str, str], PeriodStats], dict[tuple[str, str, str], DeckStats], Summary]:
     """Returns (format summaries keyed by (cadence, period_key, format_group),
-    per-deck period reports keyed by (cadence, period_key, deck_id), Summary)."""
-    by_deck_saves, _ = collect_saves(cfg)
+    per-deck period reports keyed by (cadence, period_key, canonical deck
+    identity — see deck_changelog.merge_saves_by_identity), Summary)."""
+    raw_by_deck_saves, _ = collect_saves(cfg)
+    by_deck_saves, deck_id_to_canonical = merge_saves_by_identity(raw_by_deck_saves)
     seasons = load_seasons()
     summary = Summary()
 
     deck_format: dict[str, str | None] = {}
     decklist_ids: dict[str, set[int]] = {}
     deck_names: dict[str, str] = {}
-    for deck_id, saves in by_deck_saves.items():
+    for canonical, saves in by_deck_saves.items():
         latest = saves[-1]
-        deck_format[deck_id] = latest.format
-        decklist_ids[deck_id] = decklist_card_ids(latest)
-        deck_names[deck_id] = latest.name
+        deck_format[canonical] = latest.format
+        decklist_ids[canonical] = decklist_card_ids(latest)
+        deck_names[canonical] = latest.name
 
     summaries: dict[tuple[str, str, str], PeriodStats] = {}
     deck_reports: dict[tuple[str, str, str], DeckStats] = {}
 
     for outcome, text, dt in iter_outcomes(cfg, summary):
-        if outcome.deck_id not in deck_format:
+        canonical = deck_id_to_canonical.get(outcome.deck_id)
+        if canonical is None or canonical not in deck_format:
             summary.warnings.append(
                 f"match in session {outcome.session_id} bound to deck "
                 f"{outcome.deck_id}, which has no known decklist; skipping"
             )
             continue
 
-        group = classify_format(deck_format[outcome.deck_id])
+        group = classify_format(deck_format[canonical])
         periods = _periods_for(dt, group, seasons)
 
         span_text = text[outcome.span[0] : outcome.span[1]]
@@ -122,13 +125,13 @@ def collect_period_stats(
             if outcome.won:
                 summary_stats.gp_wins += 1
 
-            deck_key = (cadence, period_key, outcome.deck_id)
+            deck_key = (cadence, period_key, canonical)
             deck_stats = deck_reports.get(deck_key)
             if deck_stats is None:
                 deck_stats = DeckStats(
-                    deck_id=outcome.deck_id,
-                    name=deck_names[outcome.deck_id],
-                    format=deck_format[outcome.deck_id],
+                    deck_id=by_deck_saves[canonical][-1].deck_id,
+                    name=deck_names[canonical],
+                    format=deck_format[canonical],
                 )
                 deck_reports[deck_key] = deck_stats
             deck_stats.gp += 1
@@ -136,8 +139,8 @@ def collect_period_stats(
                 deck_stats.gp_wins += 1
 
             for game in games:
-                fold_game(summary_stats, game, outcome, decklist_ids[outcome.deck_id])
-                fold_game(deck_stats, game, outcome, decklist_ids[outcome.deck_id])
+                fold_game(summary_stats, game, outcome, decklist_ids[canonical])
+                fold_game(deck_stats, game, outcome, decklist_ids[canonical])
 
         summary.games_parsed += len(games)
 
@@ -169,9 +172,9 @@ def run(cfg: Config) -> Summary:
     # Slug collisions between two decks sharing a period are resolved per
     # (cadence, period_key), same as card_stats.py resolves them per archive.
     by_period: dict[tuple[str, str], dict[str, str]] = {}
-    for cadence, period_key, deck_id in deck_reports:
-        by_period.setdefault((cadence, period_key), {})[deck_id] = deck_reports[
-            (cadence, period_key, deck_id)
+    for cadence, period_key, canonical in deck_reports:
+        by_period.setdefault((cadence, period_key), {})[canonical] = deck_reports[
+            (cadence, period_key, canonical)
         ].name
 
     for (cadence, period_key), names_by_deck in by_period.items():
@@ -179,8 +182,8 @@ def run(cfg: Config) -> Summary:
         summary.warnings.extend(collision_warnings)
         dest_dir = reports_dir / cadence / "decks"
         dest_dir.mkdir(parents=True, exist_ok=True)
-        for deck_id, slug in slugs.items():
-            stats = deck_reports[(cadence, period_key, deck_id)]
+        for canonical, slug in slugs.items():
+            stats = deck_reports[(cadence, period_key, canonical)]
             dest = dest_dir / f"{slugify(period_key)}-{slug}.md"
             dest.write_text(render_card_stats(stats, names), encoding="utf-8")
             summary.decks_written.append(f"{cadence}/decks/{dest.name}")

@@ -16,7 +16,7 @@ def cmd_deck_changelog(cfg, args: argparse.Namespace) -> int:
     print(f"scanned {summary.sessions_scanned} session(s), "
           f"found {summary.saves_found} deck save(s)")
     print(f"wrote {len(summary.decks_written)} changelog(s) to "
-          f"{cfg.archive_dir / 'changelogs'}")
+          f"{cfg.archive_dir / 'reports' / 'changelogs'}")
     for name in sorted(summary.decks_written):
         print(f"  {name}")
     for warning in summary.warnings:
@@ -29,7 +29,7 @@ def cmd_card_stats(cfg, args: argparse.Namespace) -> int:
     print(f"scanned {summary.sessions_scanned} session(s), "
           f"found {summary.matches_found} match(es)")
     print(f"wrote {len(summary.decks_written)} report(s) to "
-          f"{cfg.archive_dir / 'card_stats'}")
+          f"{cfg.archive_dir / 'reports' / 'card_stats'}")
     for name in sorted(summary.decks_written):
         print(f"  {name}")
     for warning in summary.warnings:
@@ -42,7 +42,7 @@ def cmd_bracket_stats(cfg, args: argparse.Namespace) -> int:
     print(f"scanned {summary.sessions_scanned} session(s), "
           f"found {summary.matches_found} match(es)")
     print(f"wrote {len(summary.files_written)} report(s) to "
-          f"{cfg.archive_dir / 'bracket_stats'}")
+          f"{cfg.archive_dir / 'reports' / 'bracket_stats'}")
     for name in sorted(summary.files_written):
         print(f"  {name}")
     for warning in summary.warnings:

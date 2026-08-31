@@ -97,8 +97,8 @@ def test_annual_splits_by_format_group_monthly_excludes_limited(cfg, tmp_path, m
     assert summaries[("annual", "2026", "Standard")].gp_wins == 1
     assert summaries[("annual", "2026", "Brawl")].gp_wins == 0
 
-    assert ("annual", "2026", "deck-std") in deck_reports
-    assert ("annual", "2026", "deck-brawl") in deck_reports
+    assert ("annual", "2026", "Riddles") in deck_reports
+    assert ("annual", "2026", "Welshie") in deck_reports
 
 
 def test_limited_format_only_counts_toward_annual_and_seasonal_not_monthly(cfg, tmp_path, monkeypatch):
@@ -146,7 +146,7 @@ def test_per_deck_period_gp_matches_summary_gp_when_one_deck_per_group(cfg, tmp_
     summaries, deck_reports, _ = reports.collect_period_stats(cfg)
 
     summary_stats = summaries[("annual", "2026", "Brawl")]
-    deck_stats = deck_reports[("annual", "2026", "deck-brawl")]
+    deck_stats = deck_reports[("annual", "2026", "Welshie")]
     assert summary_stats.gp == deck_stats.gp == 1
     assert deck_stats.name == "Welshie"
 
@@ -223,7 +223,7 @@ def test_opponent_commanders_rolled_up_into_brawl_summary_and_deck_reports(cfg, 
     summaries, deck_reports, _ = reports.collect_period_stats(cfg)
 
     summary_tallies = summaries[("annual", "2026", "Brawl")].opponent_commander_tallies
-    deck_tallies = deck_reports[("annual", "2026", "deck-brawl")].opponent_commander_tallies
+    deck_tallies = deck_reports[("annual", "2026", "Welshie")].opponent_commander_tallies
     assert summary_tallies[96080].games == 1 and summary_tallies[96080].wins == 1
     assert deck_tallies[96080].games == 1 and deck_tallies[96080].wins == 1
 
@@ -232,6 +232,31 @@ def test_opponent_commanders_rolled_up_into_brawl_summary_and_deck_reports(cfg, 
     deck_content = (cfg.archive_dir / "reports" / "annual" / "decks" / "2026-welshie.md").read_text()
     assert "Sol Ring" in summary_content and "## Opponent Commanders" in summary_content
     assert "Sol Ring" in deck_content and "## Opponent Commanders" in deck_content
+
+
+def test_deck_reissued_under_same_name_merges_into_one_period_report(cfg, tmp_path, monkeypatch):
+    """Delete+recreate under the same name gets a new deck_id from Arena —
+    the periodic per-deck report must fold both matches into one deck, not
+    write two separate reports for the same period."""
+    monkeypatch.setattr(reports, "load_seasons", lambda: [])
+    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
+
+    first_match = _match_session_text(
+        "deck-one", "Welshie", course_id="c1", match_id="m1", winning_team_id=1, format="HistoricBrawl"
+    )
+    _write_session(cfg, "20260817T100000", first_match, suffix="aaaaaaaa")
+
+    second_match = _match_session_text(
+        "deck-two", "Welshie", course_id="c2", match_id="m2", winning_team_id=2, format="HistoricBrawl"
+    )
+    _write_session(cfg, "20260817T110000", second_match, suffix="bbbbbbbb")
+
+    summaries, deck_reports, summary = reports.collect_period_stats(cfg)
+
+    assert summary.matches_found == 2
+    deck_keys = [key for key in deck_reports if key[:2] == ("annual", "2026")]
+    assert deck_keys == [("annual", "2026", "Welshie")]
+    assert deck_reports[("annual", "2026", "Welshie")].gp == 2
 
 
 def test_missing_carddb_surfaces_as_warning_not_exception(cfg):

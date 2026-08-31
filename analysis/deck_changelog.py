@@ -1,10 +1,16 @@
-"""Orchestration: scan the archive, group deck saves by deck, write changelogs.
+"""Orchestration: scan the archive, group deck saves by deck identity, write
+changelogs.
 
 Regenerated from scratch on every run rather than tracked incrementally —
 sessions are already immutable and deduplicated in the archive, and the
 corpus is small enough that re-deriving everything each time costs nothing
 but avoids a second state file that could drift from the archive it comes
 from. This mirrors collector.verify's own "just re-check everything" approach.
+
+Deck identity is name-based, not raw-deck_id-based: Arena assigns a new
+DeckId when a deck is deleted and recreated, which this project's owner uses
+as a deliberate "refresh" workflow — merge_saves_by_identity folds those
+reissued deck_ids back into one continuous history by exact name match.
 """
 
 from __future__ import annotations
@@ -52,8 +58,38 @@ def collect_saves(cfg: Config) -> tuple[dict[str, list[DeckSave]], Summary]:
     return by_deck, summary
 
 
+def merge_saves_by_identity(
+    by_deck: dict[str, list[DeckSave]],
+) -> tuple[dict[str, list[DeckSave]], dict[str, str]]:
+    """Merge raw Arena deck_ids into one continuous identity by exact name
+    match: Arena assigns a brand-new deck_id when a deck is deleted and
+    recreated under the same name, and no delete event exists in the logs
+    to key off instead. Assumes sequential delete-then-recreate, not two
+    genuinely simultaneous same-named decks.
+
+    `by_deck` (collect_saves' output) must already have each deck_id's own
+    saves sorted chronologically and be visited in chronological
+    first-appearance order (both already true of collect_saves' output).
+    Raw deck_id groups sharing a name are concatenated in that same order
+    and never re-sorted by Version, since Version numbering restarts at
+    each new deck_id and would interleave two decks' versions if resorted.
+
+    Returns (saves keyed by canonical name instead of raw deck_id,
+    raw deck_id -> canonical name map, for resolving GameOutcome.deck_id —
+    always a raw id — downstream).
+    """
+    merged: dict[str, list[DeckSave]] = {}
+    deck_id_to_canonical: dict[str, str] = {}
+    for deck_id, saves in by_deck.items():
+        canonical = saves[-1].name
+        deck_id_to_canonical[deck_id] = canonical
+        merged.setdefault(canonical, []).extend(saves)
+    return merged, deck_id_to_canonical
+
+
 def run(cfg: Config) -> Summary:
-    by_deck, summary = collect_saves(cfg)
+    raw_by_deck, summary = collect_saves(cfg)
+    by_deck, _ = merge_saves_by_identity(raw_by_deck)
     if not by_deck:
         return summary
 
@@ -63,15 +99,15 @@ def run(cfg: Config) -> Summary:
         summary.warnings.append(str(exc))
         return summary
 
-    changelogs_dir = cfg.archive_dir / "changelogs"
+    changelogs_dir = cfg.archive_dir / "reports" / "changelogs"
     changelogs_dir.mkdir(parents=True, exist_ok=True)
 
-    deck_names = {deck_id: saves[-1].name for deck_id, saves in by_deck.items()}
+    deck_names = {canonical: saves[-1].name for canonical, saves in by_deck.items()}
     slugs, collision_warnings = assign_slugs(deck_names)
     summary.warnings.extend(collision_warnings)
 
-    for deck_id, saves in by_deck.items():
-        dest = changelogs_dir / f"{slugs[deck_id]}.md"
+    for canonical, saves in by_deck.items():
+        dest = changelogs_dir / f"{slugs[canonical]}.md"
         dest.write_text(render_deck_changelog(saves, names), encoding="utf-8")
         summary.decks_written.append(dest.name)
 

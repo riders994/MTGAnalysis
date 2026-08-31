@@ -27,6 +27,7 @@ from collector.config import Config
 from . import card_stats
 from .card_stats import DeckStats, OpponentCommanderTally, iter_outcomes
 from .carddb import CardDbUnavailable, load_card_names
+from .deck_changelog import collect_saves, merge_saves_by_identity
 
 # Need >= 3 games per half to say anything at all about a trend.
 TREND_MIN_GAMES = 6
@@ -123,11 +124,24 @@ def aggregate_opponent_commanders(
 def collect_deck_trends(cfg: Config, deck_ids: set[str]) -> dict[str, DeckTrend]:
     """Chronological match-level win/loss per deck, oldest first — relies on
     iter_outcomes' guaranteed oldest-first ordering (iter_sessions sorts
-    filenames; join_deck_to_matches emits matches in file-offset order)."""
+    filenames; join_deck_to_matches emits matches in file-offset order).
+
+    `deck_ids` here are canonical deck identities (see
+    deck_changelog.merge_saves_by_identity), same as DeckStats' keys — but
+    iter_outcomes' GameOutcome.deck_id is always a raw Arena deck_id, so
+    every outcome is resolved to its canonical identity before folding in,
+    re-deriving the mapping independently rather than threading it through
+    from card_stats.collect_card_stats — consistent with this codebase's
+    existing "regenerate from scratch" style (collect_saves is already
+    called independently by card_stats.py, reports.py, deck_changelog.py)."""
+    raw_by_deck, _ = collect_saves(cfg)
+    _, deck_id_to_canonical = merge_saves_by_identity(raw_by_deck)
+
     trends = {deck_id: DeckTrend(deck_id) for deck_id in deck_ids}
     throwaway_summary = card_stats.Summary()  # counts already reported from collect_card_stats
     for outcome, _text, _dt in iter_outcomes(cfg, throwaway_summary):
-        trend = trends.get(outcome.deck_id)
+        canonical = deck_id_to_canonical.get(outcome.deck_id)
+        trend = trends.get(canonical) if canonical is not None else None
         if trend is not None:
             trend.match_results.append(outcome.won)
     return trends
@@ -182,13 +196,13 @@ def collect_bracket_stats(cfg: Config) -> tuple[BracketData, Summary]:
 
     ranked_decks: dict[str, DeckStats] = {}
     casual_decks: dict[str, DeckStats] = {}
-    for deck_id, stats in all_deck_stats.items():
+    for canonical, stats in all_deck_stats.items():
         if not stats.own_commander_grp_ids:
             continue  # not a Brawl deck
         if is_ranked_brawl(stats.format):
-            ranked_decks[deck_id] = stats
+            ranked_decks[canonical] = stats
         else:
-            casual_decks[deck_id] = stats
+            casual_decks[canonical] = stats
 
     data = BracketData(
         ranked=_build_segment(cfg, ranked_decks),
@@ -210,7 +224,7 @@ def run(cfg: Config) -> Summary:
         summary.warnings.append(str(exc))
         return summary
 
-    bracket_dir = cfg.archive_dir / "bracket_stats"
+    bracket_dir = cfg.archive_dir / "reports" / "bracket_stats"
     bracket_dir.mkdir(parents=True, exist_ok=True)
     dest = bracket_dir / "overview.md"
     dest.write_text(render_bracket_stats(data, names), encoding="utf-8")

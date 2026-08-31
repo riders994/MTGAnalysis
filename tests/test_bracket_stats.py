@@ -190,9 +190,9 @@ def test_collect_bracket_stats_segments_ranked_casual_and_excludes_non_brawl(cfg
 
     data, summary = bracket_stats.collect_bracket_stats(cfg)
 
-    assert "deck-a" in data.casual.deck_stats
-    assert "deck-b" in data.ranked.deck_stats
-    assert "deck-c" not in data.casual.deck_stats and "deck-c" not in data.ranked.deck_stats
+    assert "Deck A" in data.casual.deck_stats
+    assert "Deck B" in data.ranked.deck_stats
+    assert "Deck C" not in data.casual.deck_stats and "Deck C" not in data.ranked.deck_stats
     assert data.casual.commander_pilots[C1].gp == 1
     assert data.ranked.commander_pilots[C1].gp == 1
     assert summary.matches_found == 3
@@ -217,7 +217,7 @@ def test_run_writes_overview_with_limitations_and_tables(cfg, tmp_path):
     summary = bracket_stats.run(cfg)
 
     assert summary.files_written == ["overview.md"]
-    content = (cfg.archive_dir / "bracket_stats" / "overview.md").read_text()
+    content = (cfg.archive_dir / "reports" / "bracket_stats" / "overview.md").read_text()
     assert "## Limitations" in content
     assert "pure MMR" in content
     assert "Tergrid, God of Fright" in content
@@ -277,7 +277,7 @@ def test_reference_check_matches_expectation(cfg, tmp_path):
     _write_session(cfg, "20260817T192832", text)
 
     summary = bracket_stats.run(cfg)
-    content = (cfg.archive_dir / "bracket_stats" / "overview.md").read_text()
+    content = (cfg.archive_dir / "reports" / "bracket_stats" / "overview.md").read_text()
 
     assert summary.files_written == ["overview.md"]
     assert "matches expectation" in content
@@ -297,7 +297,7 @@ def test_reference_check_reports_insufficient_data_with_one_tier_only(cfg, tmp_p
     _write_session(cfg, "20260817T192832", text)
 
     bracket_stats.run(cfg)
-    content = (cfg.archive_dir / "bracket_stats" / "overview.md").read_text()
+    content = (cfg.archive_dir / "reports" / "bracket_stats" / "overview.md").read_text()
 
     assert "not enough reference-commander encounters yet" in content
 
@@ -322,7 +322,7 @@ def test_overlap_between_piloted_and_faced_commander_is_noted(cfg, tmp_path):
     _write_session(cfg, "20260817T192832", text)
 
     bracket_stats.run(cfg)
-    content = (cfg.archive_dir / "bracket_stats" / "overview.md").read_text()
+    content = (cfg.archive_dir / "reports" / "bracket_stats" / "overview.md").read_text()
 
     assert "You've also piloted **Our Commander** yourself" in content
 
@@ -352,7 +352,7 @@ def test_deck_trend_rising_and_insufficient_data_render(cfg, tmp_path):
     _write_session(cfg, "20260817T192832", text)
 
     bracket_stats.run(cfg)
-    content = (cfg.archive_dir / "bracket_stats" / "overview.md").read_text()
+    content = (cfg.archive_dir / "reports" / "bracket_stats" / "overview.md").read_text()
 
     assert "| Deck A | 6 | 50% (3/6) | Rising | 0% → 100% |" in content
     assert "| Deck B | 1 | 100% (1/1) | Insufficient Data | — |" in content
@@ -400,7 +400,7 @@ def test_ranked_segment_reports_no_data_yet_when_only_casual_played(cfg, tmp_pat
     _write_session(cfg, "20260817T192832", text)
 
     bracket_stats.run(cfg)
-    content = (cfg.archive_dir / "bracket_stats" / "overview.md").read_text()
+    content = (cfg.archive_dir / "reports" / "bracket_stats" / "overview.md").read_text()
 
     assert "### Ranked Brawl" in content
     assert "_No Ranked Brawl data yet._" in content
