@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gzip
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from collector.config import Config
@@ -17,6 +18,11 @@ from collector.config import Config
 class SessionFile:
     path: Path
     session_id: str
+
+
+def session_datetime(session: SessionFile) -> datetime:
+    """When this session started, parsed from its session_id (YYYYMMDDTHHMMSS)."""
+    return datetime.strptime(session.session_id, "%Y%m%dT%H%M%S")
 
 
 def iter_sessions(cfg: Config) -> list[SessionFile]:

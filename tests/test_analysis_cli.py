@@ -112,3 +112,34 @@ def test_card_stats_reports_the_written_file(populated, capsys):
     out = capsys.readouterr().out
     assert "found 1 match(es)" in out
     assert "lagaan.md" in out
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--config", "{config}", "reports"],
+        ["reports", "--config", "{config}"],
+    ],
+    ids=["config-before-subcommand", "config-after-subcommand"],
+)
+def test_reports_config_accepted_on_either_side_of_the_subcommand(populated, argv, capsys):
+    resolved = [a.format(config=populated) for a in argv]
+    assert main(resolved) == 0
+    out = capsys.readouterr().out
+    assert "format summary report(s)" in out
+    assert "per-deck period report(s)" in out
+
+
+def test_reports_writes_annual_monthly_and_seasonal_files_for_the_populated_standard_deck(populated, capsys):
+    # `populated`'s deck_upsert_line defaults to format="Standard" and its
+    # session is dated 2026-08-17 — Standard counts toward all three
+    # cadences here, since the shipped seasons.toml places that date in
+    # "The Hobbit" season (started 2026-08-14).
+    assert main(["--config", str(populated), "reports"]) == 0
+    out = capsys.readouterr().out
+    assert "annual/summary/2026-standard.md" in out
+    assert "annual/decks/2026-lagaan.md" in out
+    assert "monthly/summary/2026-08-standard.md" in out
+    assert "monthly/decks/2026-08-lagaan.md" in out
+    assert "seasonal/summary/the-hobbit-standard.md" in out
+    assert "seasonal/decks/the-hobbit-lagaan.md" in out

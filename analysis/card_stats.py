@@ -9,7 +9,9 @@ GNS/IIH tallies are a strictly additive second pass built on game_state.py.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from collector.config import Config
 
@@ -18,7 +20,7 @@ from .changelog import assign_slugs
 from .deck_changelog import collect_saves
 from .game_state import GameRecord, parse_games
 from .match_events import GameOutcome, join_deck_to_matches
-from .sessions import iter_sessions, read_text
+from .sessions import iter_sessions, read_text, session_datetime
 
 # Real archived concedes cluster at turn 0 (conceded before turnInfo ever
 # appeared — during the mulligan/opening-hand review), 2, and 4, then jump to
@@ -61,12 +63,63 @@ class Summary:
     warnings: list[str] = field(default_factory=list)
 
 
-def _decklist_card_ids(save) -> set[int]:
+def decklist_card_ids(save) -> set[int]:
     return {
         card.card_id
         for cards in (save.main_deck, save.sideboard, save.command_zone)
         for card in cards
     }
+
+
+def iter_outcomes(cfg: Config, summary: Summary) -> Iterator[tuple[GameOutcome, str, datetime]]:
+    """Every bound match across every archived session, oldest first.
+
+    Yields (outcome, that session's full log text, the session's start
+    datetime) so callers can slice GRE spans and bucket by real-world date
+    without re-walking the archive themselves. Updates summary.
+    sessions_scanned/matches_found as it goes — shared by both card_stats.py
+    (all-time per-deck reports) and reports.py (period-scoped reports).
+    """
+    for session in iter_sessions(cfg):
+        summary.sessions_scanned += 1
+        text = read_text(session)
+        dt = session_datetime(session)
+
+        for outcome in join_deck_to_matches(text, session_id=session.session_id):
+            summary.matches_found += 1
+            yield outcome, text, dt
+
+
+def fold_game(target, game: GameRecord, outcome: GameOutcome, decklist_ids: set[int]) -> None:
+    """Fold one parsed game into any stats object exposing mulligan_games/
+    card_tallies/early_forfeit_games/early_forfeit_hand_tallies — shared by
+    DeckStats (all-time, one deck) and reports.PeriodStats (one period,
+    possibly several decks of the same format)."""
+    if game.mulligan_count > 0:
+        target.mulligan_games += 1
+
+    for card_id in decklist_ids:
+        tally = target.card_tallies.setdefault(card_id, CardTally())
+        if card_id in game.opening_hand:
+            tally.oh += 1
+            if outcome.won:
+                tally.oh_wins += 1
+        elif card_id in game.drawn:
+            tally.gd += 1
+            if outcome.won:
+                tally.gd_wins += 1
+        else:
+            tally.gns += 1
+            if outcome.won:
+                tally.gns_wins += 1
+
+    if _is_early_self_forfeit(outcome, game):
+        target.early_forfeit_games += 1
+        for card_id in game.final_hand:
+            if card_id in decklist_ids:
+                target.early_forfeit_hand_tallies[card_id] = (
+                    target.early_forfeit_hand_tallies.get(card_id, 0) + 1
+                )
 
 
 def collect_card_stats(cfg: Config) -> tuple[dict[str, DeckStats], Summary]:
@@ -78,55 +131,26 @@ def collect_card_stats(cfg: Config) -> tuple[dict[str, DeckStats], Summary]:
     for deck_id, saves in by_deck_saves.items():
         latest = saves[-1]
         stats[deck_id] = DeckStats(deck_id=deck_id, name=latest.name, format=latest.format)
-        decklist_ids[deck_id] = _decklist_card_ids(latest)
+        decklist_ids[deck_id] = decklist_card_ids(latest)
 
-    for session in iter_sessions(cfg):
-        summary.sessions_scanned += 1
-        text = read_text(session)
+    for outcome, text, _dt in iter_outcomes(cfg, summary):
+        deck_stats = stats.get(outcome.deck_id)
+        if deck_stats is None:
+            summary.warnings.append(
+                f"match in session {outcome.session_id} bound to deck "
+                f"{outcome.deck_id}, which has no known decklist; skipping"
+            )
+            continue
 
-        for outcome in join_deck_to_matches(text, session_id=session.session_id):
-            summary.matches_found += 1
-            deck_stats = stats.get(outcome.deck_id)
-            if deck_stats is None:
-                summary.warnings.append(
-                    f"match in session {session.session_id} bound to deck "
-                    f"{outcome.deck_id}, which has no known decklist; skipping"
-                )
-                continue
+        deck_stats.gp += 1
+        if outcome.won:
+            deck_stats.gp_wins += 1
 
-            deck_stats.gp += 1
-            if outcome.won:
-                deck_stats.gp_wins += 1
-
-            span_text = text[outcome.span[0] : outcome.span[1]]
-            games = parse_games(span_text, match_id=outcome.match_id, our_seat_id=outcome.our_seat_id)
-            for game in games:
-                summary.games_parsed += 1
-                if game.mulligan_count > 0:
-                    deck_stats.mulligan_games += 1
-
-                for card_id in decklist_ids[outcome.deck_id]:
-                    tally = deck_stats.card_tallies.setdefault(card_id, CardTally())
-                    if card_id in game.opening_hand:
-                        tally.oh += 1
-                        if outcome.won:
-                            tally.oh_wins += 1
-                    elif card_id in game.drawn:
-                        tally.gd += 1
-                        if outcome.won:
-                            tally.gd_wins += 1
-                    else:
-                        tally.gns += 1
-                        if outcome.won:
-                            tally.gns_wins += 1
-
-                if _is_early_self_forfeit(outcome, game):
-                    deck_stats.early_forfeit_games += 1
-                    for card_id in game.final_hand:
-                        if card_id in decklist_ids[outcome.deck_id]:
-                            deck_stats.early_forfeit_hand_tallies[card_id] = (
-                                deck_stats.early_forfeit_hand_tallies.get(card_id, 0) + 1
-                            )
+        span_text = text[outcome.span[0] : outcome.span[1]]
+        games = parse_games(span_text, match_id=outcome.match_id, our_seat_id=outcome.our_seat_id)
+        for game in games:
+            summary.games_parsed += 1
+            fold_game(deck_stats, game, outcome, decklist_ids[outcome.deck_id])
 
     return stats, summary
 

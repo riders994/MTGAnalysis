@@ -1,0 +1,52 @@
+# Season boundaries for periodic reports (analysis reports --cadence seasonal).
+#
+# There is no set-release-date data anywhere in Arena's own logs (checked —
+# no releaseDate-shaped field, no patch notes text), so this table is
+# maintained by hand. Each season starts on the given date and runs until
+# the next entry's start (or indefinitely, for the newest entry). A match
+# dated before the earliest entry here falls outside any season and is
+# excluded from seasonal reports (but still counted in monthly/annual).
+#
+# Mystery Booster Commander Edition ("November(?) 2026") is deliberately
+# left out until its date — and whether it actually redefines the
+# Standard/Limited season the way a normal set release does — is confirmed.
+
+[[season]]
+name = "Lorwyn Eclipsed"
+start = 2026-01-23
+
+[[season]]
+name = "Teenage Mutant Ninja Turtles"
+start = 2026-03-06
+
+[[season]]
+name = "Secrets of Strixhaven"
+start = 2026-04-24
+
+[[season]]
+name = "Marvel Superheroes"
+start = 2026-06-26
+
+[[season]]
+name = "The Hobbit"
+start = 2026-08-14
+
+[[season]]
+name = "Reality Fracture"
+start = 2026-10-02
+
+[[season]]
+name = "Star Trek"
+start = 2026-11-11
+
+[[season]]
+name = "Nauctis: The Sunken Realm"
+start = 2027-02-05
+
+[[season]]
+name = "Kamigawa: Titanbreach"
+start = 2027-06-04
+
+[[season]]
+name = "Zhalfir"
+start = 2027-10-01

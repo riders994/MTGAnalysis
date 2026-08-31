@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from .carddb import CardNames
 from .card_stats import CardTally, DeckStats
+from .reports import PeriodStats
 
 
 def _rate(wins: int, n: int) -> str:
@@ -34,7 +35,7 @@ def _card_row(card_id: int, tally: CardTally, names: CardNames) -> tuple[str, st
     return name, row
 
 
-def _render_early_forfeits(stats: DeckStats, names: CardNames) -> str:
+def _render_early_forfeits(stats: DeckStats | PeriodStats, names: CardNames) -> str:
     heading = (
         "## Early Forfeits\n\n"
         "_Games we conceded by turn 4 (or before turn 1 ever started — "
@@ -59,6 +60,16 @@ def _render_early_forfeits(stats: DeckStats, names: CardNames) -> str:
     return heading + table
 
 
+def _render_card_table(card_tallies: dict[int, CardTally], names: CardNames) -> str:
+    if not card_tallies:
+        return "_No per-card data yet._\n"
+    rows = sorted(_card_row(card_id, tally, names) for card_id, tally in card_tallies.items())
+    return (
+        "| Card | OH WR | GD WR | GIH WR | GNS WR | IIH |\n"
+        "|---|---|---|---|---|---|\n" + "\n".join(row for _, row in rows) + "\n"
+    )
+
+
 def render_card_stats(stats: DeckStats, names: CardNames) -> str:
     header = (
         f"# {stats.name}\n\n"
@@ -71,16 +82,20 @@ def render_card_stats(stats: DeckStats, names: CardNames) -> str:
         "commanders and unused sideboard cards will trivially show 0% seen, "
         "since they aren't tracked through the hand zone the same way._\n\n"
     )
+    body = _render_card_table(stats.card_tallies, names)
+    return header + body + "\n" + _render_early_forfeits(stats, names)
 
-    if not stats.card_tallies:
-        body = "_No per-card data yet._\n"
-    else:
-        rows = sorted(
-            _card_row(card_id, tally, names) for card_id, tally in stats.card_tallies.items()
-        )
-        body = (
-            "| Card | OH WR | GD WR | GIH WR | GNS WR | IIH |\n"
-            "|---|---|---|---|---|---|\n" + "\n".join(row for _, row in rows) + "\n"
-        )
 
+def render_period_stats(stats: PeriodStats, names: CardNames) -> str:
+    header = (
+        f"# {stats.cadence.title()} — {stats.period_key} — {stats.format_group}\n\n"
+        f"- **Games Played:** {_rate(stats.gp_wins, stats.gp)}\n"
+        f"- **Mulligan Rate:** {_rate(stats.mulligan_games, stats.gp)}\n\n"
+        "_Rolled up across every deck of this format group played this "
+        "period — a card's numbers sum across every deck that included it, "
+        "as if the account played one continuous decklist all period. "
+        "Samples are small by nature, read the raw N alongside every "
+        "rate._\n\n"
+    )
+    body = _render_card_table(stats.card_tallies, names)
     return header + body + "\n" + _render_early_forfeits(stats, names)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from collector.config import ConfigError, load
 
-from . import __version__, card_stats, deck_changelog
+from . import __version__, card_stats, deck_changelog, reports
 
 
 def cmd_deck_changelog(cfg, args: argparse.Namespace) -> int:
@@ -35,6 +35,20 @@ def cmd_card_stats(cfg, args: argparse.Namespace) -> int:
     for warning in summary.warnings:
         print(f"  ! {warning}")
     return 1 if summary.warnings and not summary.decks_written else 0
+
+
+def cmd_reports(cfg, args: argparse.Namespace) -> int:
+    summary = reports.run(cfg)
+    print(f"scanned {summary.sessions_scanned} session(s), "
+          f"found {summary.matches_found} match(es)")
+    print(f"wrote {len(summary.summaries_written)} format summary report(s) and "
+          f"{len(summary.decks_written)} per-deck period report(s) to "
+          f"{cfg.archive_dir / 'reports'}")
+    for name in sorted(summary.summaries_written) + sorted(summary.decks_written):
+        print(f"  {name}")
+    for warning in summary.warnings:
+        print(f"  ! {warning}")
+    return 1 if summary.warnings and not summary.summaries_written and not summary.decks_written else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -70,6 +84,13 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
     )
     card_stats_parser.set_defaults(func=cmd_card_stats)
+
+    reports_parser = sub.add_parser(
+        "reports",
+        help="regenerate monthly/seasonal/annual format & per-deck rollups",
+        parents=[common],
+    )
+    reports_parser.set_defaults(func=cmd_reports)
 
     return parser
 
