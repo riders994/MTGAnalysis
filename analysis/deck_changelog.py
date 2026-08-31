@@ -11,6 +11,14 @@ Deck identity is name-based, not raw-deck_id-based: Arena assigns a new
 DeckId when a deck is deleted and recreated, which this project's owner uses
 as a deliberate "refresh" workflow — merge_saves_by_identity folds those
 reissued deck_ids back into one continuous history by exact name match.
+
+Exception: GENERIC_DECK_NAMES. Arena applies these as the permanent,
+never-auto-changed name for any deck the player hasn't renamed — every
+unrenamed draft, sealed pool, or web import keeps one of these forever. So
+unlike a real rename, many genuinely unrelated decks can share one of these
+names *at once*, not just sequentially, and merging them by name would
+splice unrelated decks' histories together. Each raw deck_id under one of
+these names keeps its own separate identity instead.
 """
 
 from __future__ import annotations
@@ -24,6 +32,8 @@ from .carddb import CardDbUnavailable, load_card_names
 from .changelog import assign_slugs, render_deck_changelog
 from .deck_events import DeckSave, extract_deck_saves
 from .sessions import iter_sessions, read_text
+
+GENERIC_DECK_NAMES = frozenset({"Draft Deck", "Sealed Deck", "Imported Deck"})
 
 
 @dataclass
@@ -65,7 +75,10 @@ def merge_saves_by_identity(
     match: Arena assigns a brand-new deck_id when a deck is deleted and
     recreated under the same name, and no delete event exists in the logs
     to key off instead. Assumes sequential delete-then-recreate, not two
-    genuinely simultaneous same-named decks.
+    genuinely simultaneous same-named decks — except for GENERIC_DECK_NAMES,
+    where that assumption doesn't hold (see module docstring), so each
+    deck_id there keeps its own identity (canonical = the deck_id itself)
+    instead of being merged.
 
     `by_deck` (collect_saves' output) must already have each deck_id's own
     saves sorted chronologically and be visited in chronological
@@ -74,14 +87,15 @@ def merge_saves_by_identity(
     and never re-sorted by Version, since Version numbering restarts at
     each new deck_id and would interleave two decks' versions if resorted.
 
-    Returns (saves keyed by canonical name instead of raw deck_id,
-    raw deck_id -> canonical name map, for resolving GameOutcome.deck_id —
-    always a raw id — downstream).
+    Returns (saves keyed by canonical identity instead of raw deck_id,
+    raw deck_id -> canonical identity map, for resolving GameOutcome.deck_id
+    — always a raw id — downstream).
     """
     merged: dict[str, list[DeckSave]] = {}
     deck_id_to_canonical: dict[str, str] = {}
     for deck_id, saves in by_deck.items():
-        canonical = saves[-1].name
+        name = saves[-1].name
+        canonical = deck_id if name in GENERIC_DECK_NAMES else name
         deck_id_to_canonical[deck_id] = canonical
         merged.setdefault(canonical, []).extend(saves)
     return merged, deck_id_to_canonical

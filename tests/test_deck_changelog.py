@@ -139,6 +139,40 @@ def test_deck_reissued_under_same_name_merges_into_one_history(cfg, tmp_path):
     assert "+ 1 Mox Opal" in boundary_entry
 
 
+def test_generic_deck_names_never_merge_across_deck_ids(cfg, tmp_path):
+    """Unlike a genuine rename, "Draft Deck" is Arena's permanent default
+    name for any unrenamed draft — two different drafts left unrenamed are
+    two unrelated decks that happen to share that name, not one deck
+    reissued, so each deck_id must get its own changelog file."""
+    _write_carddb_snapshot(cfg, tmp_path)
+
+    first = deck_upsert_line(
+        "deck-one", "Draft Deck", version="1", main_deck=[(75022, 1), (75021, 1)]
+    )
+    second = deck_upsert_line(
+        "deck-two", "Draft Deck", version="1", main_deck=[(1, 1), (96080, 1)]
+    )
+    _write_session(cfg, "20260817T100000", first, suffix="aaaaaaaa")
+    _write_session(cfg, "20260817T110000", second, suffix="bbbbbbbb")
+
+    summary = deck_changelog.run(cfg)
+
+    # First-encountered deck_id keeps the plain slug; the later one sharing
+    # the name collides and gets its deck_id appended (assign_slugs' existing
+    # collision handling — flagged with a warning, not silently merged).
+    assert sorted(summary.decks_written) == ["draft-deck-deck-two.md", "draft-deck.md"]
+    assert summary.warnings
+
+    first_content = (cfg.archive_dir / "reports" / "changelogs" / "draft-deck.md").read_text()
+    second_content = (cfg.archive_dir / "reports" / "changelogs" / "draft-deck-deck-two.md").read_text()
+
+    # Each file has its own full initial decklist — no cross-deck diffing.
+    assert "+ 1 Island" in first_content and "+ 1 Plains" in first_content
+    assert "Mox Opal" not in first_content
+    assert "+ 1 Mox Opal" in second_content and "+ 1 Absolute Virtue" in second_content
+    assert "Island" not in second_content
+
+
 def test_no_deck_events_writes_nothing(cfg, tmp_path):
     _write_carddb_snapshot(cfg, tmp_path)
     _write_session(cfg, "20260817T100000", "just a menu session, no deck saves\r\n")
