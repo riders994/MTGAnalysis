@@ -162,6 +162,52 @@ def test_per_card_stats_from_gre_traffic(cfg, tmp_path):
     assert "No per-card data yet." not in content
 
 
+def test_basic_land_art_variants_merge_by_name_snow_stays_separate(cfg, tmp_path):
+    """Arena assigns a distinct grpId to each art style of a basic land, so
+    a deck can carry several grpIds that all say "Plains". Collection stays
+    keyed by the raw grpId, but the rendered report must merge those variants
+    into one row — while Snow-Covered Plains, a genuinely different card,
+    stays on its own row."""
+    _write_carddb_snapshot(
+        cfg, tmp_path,
+        {75021: "Plains", 75023: "Plains", 75024: "Snow-Covered Plains", 96080: "Sol Ring"},
+    )
+
+    text = (
+        deck_upsert_line(
+            "deck-abc", "Lagaan", version="1",
+            main_deck=[(75021, 1), (75023, 1), (75024, 1), (96080, 1)],
+        )
+        + event_set_deck_response_line("course-1", "deck-abc", "Lagaan")
+        + match_room_state_playing_line(
+            "match-1", [(OUR_ID, 1, 1), (OPPONENT_ID, 2, 2)], our_id=OUR_ID
+        )
+        + gre_full_line(our_seat_id=1, hand_zone_id=35, hand=[(1, 75021)])  # Plains style A in OH
+        + gre_diff_draw_line(
+            drawn_instance_id=2, drawn_grp_id=75023, hand_zone_id=35, our_seat_id=1
+        )  # Plains style B drawn later; Snow-Covered Plains and Sol Ring never seen
+        + match_room_state_completed_line("match-1", winning_team_id=1, our_id=OUR_ID)
+    )
+    _write_session(cfg, "20260817T192832", text)
+
+    stats, _ = card_stats.collect_card_stats(cfg)
+
+    # Collection itself stays keyed by raw grpId — the two Plains variants
+    # are still tracked separately here, unmerged.
+    tallies = stats["Lagaan"].card_tallies
+    assert tallies[75021].oh == 1 and tallies[75021].oh_wins == 1
+    assert tallies[75023].gd == 1 and tallies[75023].gd_wins == 1
+    assert tallies[75024].gns == 1
+
+    full_summary = card_stats.run(cfg)
+    content = (cfg.archive_dir / "reports" / "card_stats" / "lagaan.md").read_text()
+    assert full_summary.decks_written == ["lagaan.md"]
+
+    assert content.count("| Plains |") == 1
+    assert "| Plains | 100% (1/1) | 100% (1/1) | 100% (2/2) | — | — |" in content
+    assert "| Snow-Covered Plains | — | — | — | 100% (1/1) | — |" in content
+
+
 def test_mulliganed_hand_tallied_and_rendered(cfg, tmp_path):
     """Cards sent back on a mulligan are tallied per-card, distinct from
     the deck-level Mulligan Rate — and from OH, which only covers the hand

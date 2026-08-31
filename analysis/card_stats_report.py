@@ -19,9 +19,36 @@ def _iih(tally: CardTally) -> str:
     return f"{(gih_wins / gih_n - tally.gns_wins / tally.gns):+.0%}"
 
 
-def _card_row(card_id: int, tally: CardTally, names: CardNames) -> tuple[str, str]:
+def _grouped_by_name(counts: dict[int, int], names: CardNames) -> dict[str, int]:
+    """Sums per-grpId counts into per-name totals. Arena assigns a distinct
+    grpId to every art/style variant of a card — most decks only ever use
+    one variant per slot, but basic lands routinely mix several, which would
+    otherwise split one card into multiple identical-looking report rows.
+    Grouping by resolved name merges those variants back together, while
+    naturally leaving e.g. Plains and Snow-Covered Plains apart, since those
+    are genuinely different names."""
+    merged: dict[str, int] = {}
+    for card_id, count in counts.items():
+        merged[names[card_id]] = merged.get(names[card_id], 0) + count
+    return merged
+
+
+def _card_tallies_by_name(card_tallies: dict[int, CardTally], names: CardNames) -> dict[str, CardTally]:
+    """Same grpId-variant merge as _grouped_by_name, for the richer per-card tally."""
+    merged: dict[str, CardTally] = {}
+    for card_id, tally in card_tallies.items():
+        target = merged.setdefault(names[card_id], CardTally())
+        target.oh += tally.oh
+        target.oh_wins += tally.oh_wins
+        target.gd += tally.gd
+        target.gd_wins += tally.gd_wins
+        target.gns += tally.gns
+        target.gns_wins += tally.gns_wins
+    return merged
+
+
+def _card_row(name: str, tally: CardTally) -> tuple[str, str]:
     """Returns (sort_key, rendered_row)."""
-    name = names[card_id]
     gih_n, gih_wins = tally.oh + tally.gd, tally.oh_wins + tally.gd_wins
     row = (
         f"| {name} | {_rate(tally.oh_wins, tally.oh)} | {_rate(tally.gd_wins, tally.gd)} "
@@ -43,7 +70,7 @@ def _render_mulliganed_hands(stats: DeckStats | PeriodStats, names: CardNames) -
         return heading + "_No mulligans recorded._\n"
 
     rows = sorted(
-        ((names[card_id], count) for card_id, count in stats.mulliganed_hand_tallies.items()),
+        _grouped_by_name(stats.mulliganed_hand_tallies, names).items(),
         key=lambda row: (-row[1], row[0]),
     )
     table_rows = "\n".join(f"| {name} | {count} |" for name, count in rows)
@@ -68,7 +95,7 @@ def _render_early_forfeits(stats: DeckStats | PeriodStats, names: CardNames) -> 
         return heading + "_No early forfeits recorded._\n"
 
     rows = sorted(
-        ((names[card_id], count) for card_id, count in stats.early_forfeit_hand_tallies.items()),
+        _grouped_by_name(stats.early_forfeit_hand_tallies, names).items(),
         key=lambda row: (-row[1], row[0]),
     )
     table_rows = "\n".join(f"| {name} | {count} |" for name, count in rows)
@@ -83,7 +110,7 @@ def _render_early_forfeits(stats: DeckStats | PeriodStats, names: CardNames) -> 
 def _render_card_table(card_tallies: dict[int, CardTally], names: CardNames) -> str:
     if not card_tallies:
         return "_No per-card data yet._\n"
-    rows = sorted(_card_row(card_id, tally, names) for card_id, tally in card_tallies.items())
+    rows = sorted(_card_row(name, tally) for name, tally in _card_tallies_by_name(card_tallies, names).items())
     return (
         "| Card | OH WR | GD WR | GIH WR | GNS WR | IIH |\n"
         "|---|---|---|---|---|---|\n" + "\n".join(row for _, row in rows) + "\n"
