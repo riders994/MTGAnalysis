@@ -1,10 +1,11 @@
-"""Parsing DeckUpsertDeckV3 save events out of a decompressed session."""
+"""Parsing DeckUpsertDeckV3/EventSetDeckV3 save events out of a decompressed
+session."""
 
 from __future__ import annotations
 
 from analysis.deck_events import CardCount, extract_deck_saves
 
-from conftest import deck_upsert_line
+from conftest import deck_upsert_line, event_set_deck_request_line
 
 DECK_ID = "3474397f-2e4c-49fa-99fb-bb111e960f29"
 
@@ -57,6 +58,56 @@ def test_malformed_payload_is_skipped_not_raised():
     text = (
         "[UnityCrossThreadLogger]==> DeckUpsertDeckV3 {not valid json}\r\n"
         + deck_upsert_line("deck-a", "Deck A", version="1")
+    )
+
+    saves = extract_deck_saves(text, session_id="s1")
+
+    assert [save.deck_id for save in saves] == ["deck-a"]
+
+
+def test_parses_an_event_set_deck_v3_save():
+    line = event_set_deck_request_line(
+        "c061027c-3033-4ac4-90dc-b28cb399bda5",
+        "Draft Deck",
+        event_name="QuickDraft_HOB_20260820",
+        version="11",
+        format="Draft",
+        main_deck=[(103443, 1), (79737, 7)],
+        sideboard=[(103545, 2)],
+    )
+
+    saves = extract_deck_saves(line, session_id="20260825T003744")
+
+    assert len(saves) == 1
+    save = saves[0]
+    assert save.deck_id == "c061027c-3033-4ac4-90dc-b28cb399bda5"
+    assert save.name == "Draft Deck"
+    assert save.version == "11"
+    assert save.format == "Draft"
+    assert save.main_deck == (CardCount(103443, 1), CardCount(79737, 7))
+    assert save.sideboard == (CardCount(103545, 2),)
+
+
+def test_deck_upsert_and_event_set_deck_saves_merge_in_file_order():
+    text = (
+        deck_upsert_line("deck-a", "Deck A", version="1")
+        + event_set_deck_request_line("deck-b", "Deck B", version="1")
+        + deck_upsert_line("deck-a", "Deck A", version="2")
+    )
+
+    saves = extract_deck_saves(text, session_id="s1")
+
+    assert [(save.deck_id, save.version) for save in saves] == [
+        ("deck-a", "1"),
+        ("deck-b", "1"),
+        ("deck-a", "2"),
+    ]
+
+
+def test_malformed_event_set_deck_payload_is_skipped_not_raised():
+    text = (
+        "[UnityCrossThreadLogger]==> EventSetDeckV3 {not valid json}\r\n"
+        + event_set_deck_request_line("deck-a", "Deck A", version="1")
     )
 
     saves = extract_deck_saves(text, session_id="s1")

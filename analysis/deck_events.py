@@ -1,11 +1,16 @@
 """Extracting deck-save events from one session's decompressed text.
 
-A deck save is logged as a DeckUpsertDeckV3 RPC request: an outer JSON object
-whose "request" field is itself a JSON-encoded string (double-encoded), which
-in turn holds the deck's Summary (attributes like Version, Format, dates) and
-its MainDeck/Sideboard/CommandZone card lists. Not every session contains one
-of these — most are plain menu browsing — so absence is the common case, not
-an error.
+A deck save is logged as either a DeckUpsertDeckV3 or an EventSetDeckV3 RPC
+*request* (the deck-builder save and the in-event/draft deck-submit paths,
+respectively — not to be confused with EventSetDeckV3's own *response*, a
+differently-shaped `<== EventSetDeckV3(id)` line that match_events.py reads
+for a different purpose, binding decks to matches). Both request shapes are
+an outer JSON object whose "request" field is itself a JSON-encoded string
+(double-encoded), which in turn holds the deck's Summary (attributes like
+Version, Format, dates) and its MainDeck/Sideboard/CommandZone card lists;
+EventSetDeckV3's inner object additionally carries an EventName field, which
+is ignored here. Not every session contains one of these — most are plain
+menu browsing — so absence is the common case, not an error.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ log = logging.getLogger(__name__)
 # Arena writes \r\n; the payload never itself contains a literal newline, so
 # stopping at the first \r or \n safely bounds one line's JSON.
 _DECK_UPSERT_RE = re.compile(r"\[UnityCrossThreadLogger\]==> DeckUpsertDeckV3 (\{[^\r\n]+\})")
+_EVENT_SET_DECK_REQUEST_RE = re.compile(r"\[UnityCrossThreadLogger\]==> EventSetDeckV3 (\{[^\r\n]+\})")
 
 
 @dataclass(frozen=True)
@@ -101,13 +107,19 @@ def parse_deck_upsert(request_json: str) -> DeckSave | None:
 
 
 def extract_deck_saves(log_text: str, *, session_id: str) -> list[DeckSave]:
-    """Every DeckUpsertDeckV3 save found in one decompressed session, in file order."""
+    """Every DeckUpsertDeckV3/EventSetDeckV3 save found in one decompressed
+    session, in file order (the two share a request shape, so are merged by
+    match position rather than handled as two separate passes)."""
     saves = []
-    for match in _DECK_UPSERT_RE.finditer(log_text):
+    matches = sorted(
+        (*_DECK_UPSERT_RE.finditer(log_text), *_EVENT_SET_DECK_REQUEST_RE.finditer(log_text)),
+        key=lambda match: match.start(),
+    )
+    for match in matches:
         try:
             outer = json.loads(match.group(1))
         except json.JSONDecodeError:
-            log.debug("session %s: unparsable DeckUpsertDeckV3 line, skipping", session_id)
+            log.debug("session %s: unparsable deck-save line, skipping", session_id)
             continue
 
         request_raw = outer.get("request")

@@ -97,6 +97,48 @@ def deck_upsert_line(
     return f"[UnityCrossThreadLogger]==> DeckUpsertDeckV3 {json.dumps(outer)}\r\n"
 
 
+def event_set_deck_request_line(
+    deck_id: str,
+    name: str,
+    *,
+    event_name: str = "QuickDraft_HOB_20260820",
+    version: str = "1",
+    format: str = "Draft",
+    last_updated: str = "2026-08-08T02:35:17.4706732-04:00",
+    last_played: str | None = None,
+    main_deck=(),
+    sideboard=(),
+    command_zone=(),
+    request_id: str = "33333333-3333-3333-3333-333333333333",
+) -> str:
+    """A synthetic EventSetDeckV3 *request* line — the in-event/draft deck-save
+    path, distinct from event_set_deck_response_line's `<== EventSetDeckV3(id)`
+    match-binding response. Same Summary/Deck shape as deck_upsert_line, plus
+    the EventName field this RPC's request carries (confirmed real shape)."""
+    attributes = [
+        {"name": "Version", "value": version},
+        {"name": "LastUpdated", "value": json.dumps(last_updated)},
+        {"name": "Format", "value": format},
+    ]
+    if last_played is not None:
+        attributes.append({"name": "LastPlayed", "value": json.dumps(last_played)})
+
+    def cards(pairs):
+        return [{"cardId": card_id, "quantity": quantity} for card_id, quantity in pairs]
+
+    request = {
+        "EventName": event_name,
+        "Summary": {"DeckId": deck_id, "Name": name, "Attributes": attributes},
+        "Deck": {
+            "MainDeck": cards(main_deck),
+            "Sideboard": cards(sideboard),
+            "CommandZone": cards(command_zone),
+        },
+    }
+    outer = {"id": request_id, "request": json.dumps(request)}
+    return f"[UnityCrossThreadLogger]==> EventSetDeckV3 {json.dumps(outer)}\r\n"
+
+
 def event_set_deck_response_line(
     course_id: str,
     deck_id: str,
