@@ -82,15 +82,39 @@ def _render_opponent_commanders(
         "## Opponent Commanders\n\n"
         "_Every Brawl commander we've faced, most-played-against first — "
         "the win rate is ours, against decks led by that commander, not a "
-        "measure of the commander's overall power._\n\n"
+        "measure of the commander's overall power. Early Concedes counts "
+        "games we gave up in by turn 6 (roughly our own 3rd turn) or before "
+        "turn 1 ever started — a commander that shows up here often is one "
+        "we're folding against fast, which is as telling as the win rate._\n\n"
     )
+
+    ranked_by_early_concedes = sorted(
+        ((names[commander_id], tally) for commander_id, tally in tallies.items()),
+        key=lambda row: (-row[1].early_concedes, row[0]),
+    )
+    top_name, top_tally = ranked_by_early_concedes[0]
+    callout = ""
+    if top_tally.early_concedes > 0:
+        callout = (
+            f"**Commander with most early concedes:** {top_name} "
+            f"({top_tally.early_concedes} of {top_tally.games} game(s))\n\n"
+        )
+
     rows = sorted(
         ((names[commander_id], tally) for commander_id, tally in tallies.items()),
         key=lambda row: (-row[1].games, row[0]),
     )
-    table_rows = "\n".join(f"| {name} | {tally.games} | {_rate(tally.wins, tally.games)} |" for name, tally in rows)
-    table = "| Commander | Faced | Our Win Rate |\n|---|---|---|\n" + table_rows + "\n"
-    return "\n" + heading + table
+    table_rows = "\n".join(
+        f"| {name} | {tally.games} | {_rate(tally.wins, tally.games)} "
+        f"| {_rate(tally.early_concedes, tally.games)} |"
+        for name, tally in rows
+    )
+    table = (
+        "| Commander | Faced | Our Win Rate | Early Concedes |\n|---|---|---|---|\n"
+        + table_rows
+        + "\n"
+    )
+    return "\n" + heading + callout + table
 
 
 def render_card_stats(stats: DeckStats, names: CardNames) -> str:

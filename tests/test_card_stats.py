@@ -12,6 +12,7 @@ from conftest import (
     deck_upsert_line,
     event_set_deck_response_line,
     gre_diff_draw_line,
+    gre_diff_turn_line,
     gre_full_line,
     match_room_state_completed_line,
     match_room_state_playing_line,
@@ -198,6 +199,50 @@ def test_opponent_commander_tallied_and_rendered_for_brawl_deck(cfg, tmp_path):
     assert "## Opponent Commanders" in content
     assert "Sol Ring" in content
     assert "100% (1/1)" in content
+
+
+def test_opponent_commander_early_concede_uses_turn_6_not_turn_4_cutoff(cfg, tmp_path):
+    _write_carddb_snapshot(
+        cfg, tmp_path, {75022: "Island", 96080: "Sol Ring", 90302: "Krenko, Tin Street Kingpin"}
+    )
+
+    text = (
+        deck_upsert_line(
+            "deck-abc", "Lagaan", version="1", format="HistoricBrawl",
+            main_deck=[(75022, 1)], command_zone=[(90302, 1)],
+        )
+        + event_set_deck_response_line("course-1", "deck-abc", "Lagaan")
+        + match_room_state_playing_line(
+            "match-1", [(OUR_ID, OUR_SEAT, 1), (OPPONENT_ID, OPPONENT_SEAT, 2)], our_id=OUR_ID
+        )
+        + gre_full_line(
+            our_seat_id=OUR_SEAT,
+            hand_zone_id=35,
+            hand=[(1, 75022)],
+            command_zone_id=26,
+            command_zone_cards=[(10, 90302, OUR_SEAT), (11, 96080, OPPONENT_SEAT)],
+        )
+        + gre_diff_turn_line(turn_number=6)
+        + match_room_state_completed_line(
+            "match-1", winning_team_id=2, reason="ResultReason_Concede", our_id=OUR_ID
+        )
+    )
+    _write_session(cfg, "20260817T192832", text)
+
+    stats, _ = card_stats.collect_card_stats(cfg)
+    deck_stats = stats["deck-abc"]
+
+    # Turn 6 is past EARLY_FORFEIT_MAX_TURN (4) — the card-in-hand tracker
+    # doesn't count it...
+    assert deck_stats.early_forfeit_games == 0
+    # ...but the opponent-commander tracker uses a looser cutoff (turn 6).
+    tally = deck_stats.opponent_commander_tallies[96080]
+    assert tally.games == 1 and tally.wins == 0
+    assert tally.early_concedes == 1
+
+    card_stats.run(cfg)
+    content = (cfg.archive_dir / "card_stats" / "lagaan.md").read_text()
+    assert "**Commander with most early concedes:** Sol Ring (1 of 1 game(s))" in content
 
 
 def test_non_brawl_deck_report_omits_opponent_commanders_section(cfg, tmp_path):

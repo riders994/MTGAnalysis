@@ -28,6 +28,13 @@ from .sessions import iter_sessions, read_text, session_datetime
 # it if a larger sample doesn't bear the pattern out.
 EARLY_FORFEIT_MAX_TURN = 4
 
+# Turn numbers are a GLOBAL/absolute counter across both players (confirmed
+# against real archived data), not per-player — turn 6 is roughly our 3rd
+# turn. Used only for the opponent-commander early-concede tally below,
+# which the user asked to mark "early" at a looser cutoff than
+# EARLY_FORFEIT_MAX_TURN's card-in-hand tracker.
+COMMANDER_EARLY_CONCEDE_MAX_TURN = 6
+
 
 @dataclass
 class CardTally:
@@ -45,6 +52,7 @@ class CardTally:
 class OpponentCommanderTally:
     games: int = 0  # times we've faced a deck led by this commander
     wins: int = 0  # times we won that matchup
+    early_concedes: int = 0  # times WE conceded by COMMANDER_EARLY_CONCEDE_MAX_TURN
 
 
 @dataclass
@@ -108,6 +116,7 @@ def fold_game(target, game: GameRecord, outcome: GameOutcome, decklist_ids: set[
     if game.mulligan_count > 0:
         target.mulligan_games += 1
 
+    commander_early_concede = _is_early_self_forfeit(outcome, game, COMMANDER_EARLY_CONCEDE_MAX_TURN)
     for commander_id in game.opponent_commander_grp_ids:
         commander_tally = target.opponent_commander_tallies.setdefault(
             commander_id, OpponentCommanderTally()
@@ -115,6 +124,8 @@ def fold_game(target, game: GameRecord, outcome: GameOutcome, decklist_ids: set[
         commander_tally.games += 1
         if outcome.won:
             commander_tally.wins += 1
+        if commander_early_concede:
+            commander_tally.early_concedes += 1
 
     for card_id in decklist_ids:
         tally = target.card_tallies.setdefault(card_id, CardTally())
@@ -131,7 +142,7 @@ def fold_game(target, game: GameRecord, outcome: GameOutcome, decklist_ids: set[
             if outcome.won:
                 tally.gns_wins += 1
 
-    if _is_early_self_forfeit(outcome, game):
+    if _is_early_self_forfeit(outcome, game, EARLY_FORFEIT_MAX_TURN):
         target.early_forfeit_games += 1
         for card_id in game.final_hand:
             if card_id in decklist_ids:
@@ -173,12 +184,12 @@ def collect_card_stats(cfg: Config) -> tuple[dict[str, DeckStats], Summary]:
     return stats, summary
 
 
-def _is_early_self_forfeit(outcome: GameOutcome, game: GameRecord) -> bool:
-    """True if WE gave up on this game by EARLY_FORFEIT_MAX_TURN (or before
-    turn 1 ever started). A concession always defeats the conceder, so
-    reason == Concede and we lost means it was ours, not the opponent's."""
+def _is_early_self_forfeit(outcome: GameOutcome, game: GameRecord, max_turn: int) -> bool:
+    """True if WE gave up on this game by max_turn (or before turn 1 ever
+    started). A concession always defeats the conceder, so reason == Concede
+    and we lost means it was ours, not the opponent's."""
     we_conceded = outcome.reason == "ResultReason_Concede" and not outcome.won
-    return we_conceded and (game.last_turn is None or game.last_turn <= EARLY_FORFEIT_MAX_TURN)
+    return we_conceded and (game.last_turn is None or game.last_turn <= max_turn)
 
 
 def run(cfg: Config) -> Summary:
