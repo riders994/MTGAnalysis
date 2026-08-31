@@ -17,6 +17,14 @@ every other opponent object stays hidden — confirmed directly against real
 archived Brawl matches, where the Command Zone is a single shared zone (no
 zone-level ownerSeatId) holding both players' commanders, distinguished by
 each object's own ownerSeatId.
+
+That same zone isn't exclusively commanders, though: non-Card objects
+(confirmed real: a Boon from a curse-like effect, an Emblem from a
+planeswalker ultimate) also transiently pass through it, owned by whichever
+player they affect, and reveal a grpId the same way. Their grpId doesn't
+resolve to a card name — carddb has no entry for it — so
+_update_opponent_commanders filters to GameObjectType_Card to keep them out
+of opponent_commander_grp_ids.
 """
 
 from __future__ import annotations
@@ -55,6 +63,7 @@ class _Object:
     grp_id: int
     owner_seat_id: int | None
     zone_id: int | None
+    type: str | None
 
 
 def _iter_game_state_messages(span_text: str):
@@ -125,7 +134,11 @@ class _GameTracker:
                 continue
             for instance_id in zone.object_instance_ids:
                 obj = self.objects.get(instance_id)
-                if obj is not None and obj.owner_seat_id not in (None, self.our_seat_id):
+                if (
+                    obj is not None
+                    and obj.type == "GameObjectType_Card"
+                    and obj.owner_seat_id not in (None, self.our_seat_id)
+                ):
                     self.opponent_commander_grp_ids.add(obj.grp_id)
 
     def apply_full(self, message: dict) -> None:
@@ -260,7 +273,8 @@ class _GameTracker:
                 if old_zone is not None:
                     old_zone.object_instance_ids.discard(instance_id)
 
-            self.objects[instance_id] = _Object(grp_id, owner_seat_id, zone_id)
+            obj_type = entry.get("type", previous.type if previous is not None else None)
+            self.objects[instance_id] = _Object(grp_id, owner_seat_id, zone_id, obj_type)
             if zone_id is not None:
                 zone = self.zones.setdefault(
                     zone_id, _Zone(zone_type=None, owner_seat_id=owner_seat_id)

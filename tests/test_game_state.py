@@ -207,6 +207,25 @@ def test_opponent_commander_grp_id_is_revealed_and_ours_is_excluded():
     assert record.opponent_commander_grp_ids == frozenset({96080})
 
 
+def test_non_card_command_zone_object_is_not_an_opponent_commander():
+    # Confirmed real shape: a Boon (e.g. Loch Larent's curse) or Emblem
+    # (e.g. "The Ring tempts you") transiently sits in the same Command Zone
+    # as the real commander, owned by the opposing seat, revealing a grpId
+    # that isn't a card — must not be picked up as a second "commander".
+    text = gre_full_line(
+        our_seat_id=OUR_SEAT,
+        hand_zone_id=HAND_ZONE,
+        hand=[(1, 100)],
+        command_zone_id=26,
+        command_zone_cards=[(11, 96080, 3 - OUR_SEAT)],
+        command_zone_non_cards=[(12, 6, 3 - OUR_SEAT, "GameObjectType_Boon")],
+    )
+
+    record = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)[0]
+
+    assert record.opponent_commander_grp_ids == frozenset({96080})
+
+
 def test_no_command_zone_means_no_opponent_commanders():
     text = gre_full_line(our_seat_id=OUR_SEAT, hand_zone_id=HAND_ZONE, hand=[(1, 100)])
 

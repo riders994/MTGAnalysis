@@ -231,6 +231,7 @@ def gre_full_line(
     opponent_hand_instance_ids=(),
     command_zone_id: int | None = None,
     command_zone_cards=(),  # list of (instance_id, grp_id, owner_seat_id)
+    command_zone_non_cards=(),  # list of (instance_id, grp_id, owner_seat_id, type)
     game_number: int = 1,
     **kwargs,
 ) -> str:
@@ -239,7 +240,11 @@ def gre_full_line(
     (hidden information) — matching Arena's confirmed visibility rules. The
     Command Zone is the one confirmed exception: it's a single shared zone
     (no zone-level ownerSeatId) holding both players' commanders, each
-    object revealing its own grpId regardless of which player owns it."""
+    object revealing its own grpId regardless of which player owns it.
+    command_zone_non_cards lets a test also stage a non-Card object there
+    (a Boon/Emblem, confirmed real shapes — see analysis/game_state.py's
+    _update_opponent_commanders), which must NOT be picked up as a
+    commander even though it shares the zone and reveals a grpId."""
     zones = [
         {
             "zoneId": hand_zone_id,
@@ -262,7 +267,11 @@ def gre_full_line(
             {
                 "zoneId": command_zone_id,
                 "type": "ZoneType_Command",
-                "objectInstanceIds": [instance_id for instance_id, _, _ in command_zone_cards],
+                "objectInstanceIds": [
+                    instance_id for instance_id, _, _ in command_zone_cards
+                ] + [
+                    instance_id for instance_id, _, _, _ in command_zone_non_cards
+                ],
             }
         )
 
@@ -275,6 +284,11 @@ def gre_full_line(
         {"instanceId": instance_id, "grpId": grp_id, "type": "GameObjectType_Card",
          "zoneId": command_zone_id, "ownerSeatId": owner_seat_id}
         for instance_id, grp_id, owner_seat_id in command_zone_cards
+    )
+    game_objects.extend(
+        {"instanceId": instance_id, "grpId": grp_id, "type": obj_type,
+         "zoneId": command_zone_id, "ownerSeatId": owner_seat_id}
+        for instance_id, grp_id, owner_seat_id, obj_type in command_zone_non_cards
     )
 
     message = {
