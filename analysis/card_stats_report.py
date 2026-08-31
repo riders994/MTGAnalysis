@@ -8,13 +8,8 @@ from __future__ import annotations
 
 from .carddb import CardNames
 from .card_stats import CardTally, DeckStats, OpponentCommanderTally
+from .rates import format_rate as _rate
 from .reports import PeriodStats
-
-
-def _rate(wins: int, n: int) -> str:
-    if not n:
-        return "—"
-    return f"{wins / n:.0%} ({wins}/{n})"
 
 
 def _iih(tally: CardTally) -> str:

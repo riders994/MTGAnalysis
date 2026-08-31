@@ -69,6 +69,9 @@ class DeckStats:
     # Always empty outside Brawl — no Command Zone means no opponent
     # commander is ever seen. card_id here means the commander's grpId.
     opponent_commander_tallies: dict[int, OpponentCommanderTally] = field(default_factory=dict)
+    # Our own commander(s) — empty outside Brawl. 2 entries for a
+    # Partner/Background pairing.
+    own_commander_grp_ids: frozenset[int] = field(default_factory=frozenset)
 
 
 @dataclass
@@ -86,6 +89,13 @@ def decklist_card_ids(save) -> set[int]:
         for cards in (save.main_deck, save.sideboard, save.command_zone)
         for card in cards
     }
+
+
+def own_commander_ids(save) -> frozenset[int]:
+    """Every commander grpId in this deck's Command Zone (2 for a Partner/
+    Background pairing). Empty outside Brawl — no Command Zone means no
+    commander was ever saved."""
+    return frozenset(card.card_id for card in save.command_zone)
 
 
 def iter_outcomes(cfg: Config, summary: Summary) -> Iterator[tuple[GameOutcome, str, datetime]]:
@@ -159,7 +169,12 @@ def collect_card_stats(cfg: Config) -> tuple[dict[str, DeckStats], Summary]:
     decklist_ids: dict[str, set[int]] = {}
     for deck_id, saves in by_deck_saves.items():
         latest = saves[-1]
-        stats[deck_id] = DeckStats(deck_id=deck_id, name=latest.name, format=latest.format)
+        stats[deck_id] = DeckStats(
+            deck_id=deck_id,
+            name=latest.name,
+            format=latest.format,
+            own_commander_grp_ids=own_commander_ids(latest),
+        )
         decklist_ids[deck_id] = decklist_card_ids(latest)
 
     for outcome, text, _dt in iter_outcomes(cfg, summary):

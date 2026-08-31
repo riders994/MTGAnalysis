@@ -8,7 +8,7 @@ from pathlib import Path
 
 from collector.config import ConfigError, load
 
-from . import __version__, card_stats, deck_changelog, reports
+from . import __version__, bracket_stats, card_stats, deck_changelog, reports
 
 
 def cmd_deck_changelog(cfg, args: argparse.Namespace) -> int:
@@ -35,6 +35,19 @@ def cmd_card_stats(cfg, args: argparse.Namespace) -> int:
     for warning in summary.warnings:
         print(f"  ! {warning}")
     return 1 if summary.warnings and not summary.decks_written else 0
+
+
+def cmd_bracket_stats(cfg, args: argparse.Namespace) -> int:
+    summary = bracket_stats.run(cfg)
+    print(f"scanned {summary.sessions_scanned} session(s), "
+          f"found {summary.matches_found} match(es)")
+    print(f"wrote {len(summary.files_written)} report(s) to "
+          f"{cfg.archive_dir / 'bracket_stats'}")
+    for name in sorted(summary.files_written):
+        print(f"  {name}")
+    for warning in summary.warnings:
+        print(f"  ! {warning}")
+    return 1 if summary.warnings and not summary.files_written else 0
 
 
 def cmd_reports(cfg, args: argparse.Namespace) -> int:
@@ -84,6 +97,13 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
     )
     card_stats_parser.set_defaults(func=cmd_card_stats)
+
+    bracket_stats_parser = sub.add_parser(
+        "bracket-stats",
+        help="regenerate the Brawl bracket-signal report (best-effort, no ground-truth data)",
+        parents=[common],
+    )
+    bracket_stats_parser.set_defaults(func=cmd_bracket_stats)
 
     reports_parser = sub.add_parser(
         "reports",

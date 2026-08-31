@@ -259,6 +259,48 @@ def test_non_brawl_deck_report_omits_opponent_commanders_section(cfg, tmp_path):
     assert "Opponent Commanders" not in content
 
 
+def test_own_commander_grp_ids_populated_from_command_zone(cfg, tmp_path):
+    _write_carddb_snapshot(
+        cfg, tmp_path, {75022: "Island", 90302: "Krenko, Tin Street Kingpin"}
+    )
+    text = deck_upsert_line(
+        "deck-abc", "Lagaan", version="1", format="HistoricBrawl",
+        main_deck=[(75022, 1)], command_zone=[(90302, 1)],
+    )
+    _write_session(cfg, "20260817T192832", text)
+
+    stats, _ = card_stats.collect_card_stats(cfg)
+
+    assert stats["deck-abc"].own_commander_grp_ids == frozenset({90302})
+
+
+def test_own_commander_grp_ids_empty_for_non_brawl_deck(cfg, tmp_path):
+    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
+    text = deck_upsert_line(
+        "deck-abc", "Lagaan", version="1", format="Standard", main_deck=[(75022, 1)],
+    )
+    _write_session(cfg, "20260817T192832", text)
+
+    stats, _ = card_stats.collect_card_stats(cfg)
+
+    assert stats["deck-abc"].own_commander_grp_ids == frozenset()
+
+
+def test_own_commander_grp_ids_includes_both_partner_commanders(cfg, tmp_path):
+    _write_carddb_snapshot(
+        cfg, tmp_path, {75022: "Island", 90302: "Krenko, Tin Street Kingpin", 96080: "Sol Ring"}
+    )
+    text = deck_upsert_line(
+        "deck-abc", "Lagaan", version="1", format="HistoricBrawl",
+        main_deck=[(75022, 1)], command_zone=[(90302, 1), (96080, 1)],
+    )
+    _write_session(cfg, "20260817T192832", text)
+
+    stats, _ = card_stats.collect_card_stats(cfg)
+
+    assert stats["deck-abc"].own_commander_grp_ids == frozenset({90302, 96080})
+
+
 def test_missing_carddb_surfaces_as_warning_not_exception(cfg):
     text = _match_session_text(
         "deck-abc", "Lagaan", course_id="course-1", match_id="match-1", winning_team_id=1
