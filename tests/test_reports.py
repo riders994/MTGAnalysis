@@ -14,12 +14,15 @@ from analysis.seasons import Season
 from conftest import (
     deck_upsert_line,
     event_set_deck_response_line,
+    gre_full_line,
     match_room_state_completed_line,
     match_room_state_playing_line,
 )
 
 OUR_ID = "OURCLIENTID"
 OPPONENT_ID = "OPPONENTID"
+OUR_SEAT = 1
+OPPONENT_SEAT = 2
 
 
 def _write_session(cfg, session_id: str, text: str, *, suffix: str = "aaaaaaaa") -> Path:
@@ -189,6 +192,46 @@ def test_deck_never_seen_via_deck_upsert_warns_and_is_skipped(cfg, tmp_path, mon
     assert deck_reports == {}
     assert summary.matches_found == 1
     assert summary.warnings
+
+
+def test_opponent_commanders_rolled_up_into_brawl_summary_and_deck_reports(cfg, tmp_path, monkeypatch):
+    monkeypatch.setattr(reports, "load_seasons", lambda: [])
+    _write_carddb_snapshot(
+        cfg, tmp_path, {75022: "Island", 96080: "Sol Ring", 90302: "Krenko, Tin Street Kingpin"}
+    )
+
+    text = (
+        deck_upsert_line(
+            "deck-brawl", "Welshie", version="1", format="HistoricBrawl",
+            main_deck=[(75022, 1)], command_zone=[(90302, 1)],
+        )
+        + event_set_deck_response_line("c1", "deck-brawl", "Welshie")
+        + match_room_state_playing_line(
+            "m1", [(OUR_ID, OUR_SEAT, 1), (OPPONENT_ID, OPPONENT_SEAT, 2)], our_id=OUR_ID
+        )
+        + gre_full_line(
+            our_seat_id=OUR_SEAT,
+            hand_zone_id=35,
+            hand=[(1, 75022)],
+            command_zone_id=26,
+            command_zone_cards=[(10, 90302, OUR_SEAT), (11, 96080, OPPONENT_SEAT)],
+        )
+        + match_room_state_completed_line("m1", winning_team_id=1, our_id=OUR_ID)
+    )
+    _write_session(cfg, "20260817T100000", text)
+
+    summaries, deck_reports, _ = reports.collect_period_stats(cfg)
+
+    summary_tallies = summaries[("annual", "2026", "Brawl")].opponent_commander_tallies
+    deck_tallies = deck_reports[("annual", "2026", "deck-brawl")].opponent_commander_tallies
+    assert summary_tallies[96080].games == 1 and summary_tallies[96080].wins == 1
+    assert deck_tallies[96080].games == 1 and deck_tallies[96080].wins == 1
+
+    reports.run(cfg)
+    summary_content = (cfg.archive_dir / "reports" / "annual" / "summary" / "2026-brawl.md").read_text()
+    deck_content = (cfg.archive_dir / "reports" / "annual" / "decks" / "2026-welshie.md").read_text()
+    assert "Sol Ring" in summary_content and "## Opponent Commanders" in summary_content
+    assert "Sol Ring" in deck_content and "## Opponent Commanders" in deck_content
 
 
 def test_missing_carddb_surfaces_as_warning_not_exception(cfg):

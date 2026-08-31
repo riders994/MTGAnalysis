@@ -24,7 +24,14 @@ from dataclasses import dataclass, field
 from collector.config import Config
 
 from .carddb import CardDbUnavailable, load_card_names
-from .card_stats import CardTally, DeckStats, decklist_card_ids, fold_game, iter_outcomes
+from .card_stats import (
+    CardTally,
+    DeckStats,
+    OpponentCommanderTally,
+    decklist_card_ids,
+    fold_game,
+    iter_outcomes,
+)
 from .changelog import assign_slugs, slugify
 from .deck_changelog import collect_saves
 from .format_groups import classify_format
@@ -46,6 +53,7 @@ class PeriodStats:
     early_forfeit_games: int = 0
     early_forfeit_hand_tallies: dict[int, int] = field(default_factory=dict)
     card_tallies: dict[int, CardTally] = field(default_factory=dict)
+    opponent_commander_tallies: dict[int, OpponentCommanderTally] = field(default_factory=dict)
 
 
 @dataclass

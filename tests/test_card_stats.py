@@ -17,6 +17,9 @@ from conftest import (
     match_room_state_playing_line,
 )
 
+OUR_SEAT = 1
+OPPONENT_SEAT = 2
+
 OUR_ID = "OURCLIENTID"
 OPPONENT_ID = "OPPONENTID"
 
@@ -155,6 +158,60 @@ def test_per_card_stats_from_gre_traffic(cfg, tmp_path):
     assert full_summary.decks_written == ["lagaan.md"]
     assert "Island" in content and "100% (1/1)" in content
     assert "No per-card data yet." not in content
+
+
+def test_opponent_commander_tallied_and_rendered_for_brawl_deck(cfg, tmp_path):
+    _write_carddb_snapshot(
+        cfg, tmp_path, {75022: "Island", 96080: "Sol Ring", 90302: "Krenko, Tin Street Kingpin"}
+    )
+
+    text = (
+        deck_upsert_line(
+            "deck-abc", "Lagaan", version="1", format="HistoricBrawl",
+            main_deck=[(75022, 1)], command_zone=[(90302, 1)],
+        )
+        + event_set_deck_response_line("course-1", "deck-abc", "Lagaan")
+        + match_room_state_playing_line(
+            "match-1", [(OUR_ID, OUR_SEAT, 1), (OPPONENT_ID, OPPONENT_SEAT, 2)], our_id=OUR_ID
+        )
+        + gre_full_line(
+            our_seat_id=OUR_SEAT,
+            hand_zone_id=35,
+            hand=[(1, 75022)],
+            command_zone_id=26,
+            command_zone_cards=[(10, 90302, OUR_SEAT), (11, 96080, OPPONENT_SEAT)],
+        )
+        + match_room_state_completed_line("match-1", winning_team_id=1, our_id=OUR_ID)
+    )
+    _write_session(cfg, "20260817T192832", text)
+
+    stats, _ = card_stats.collect_card_stats(cfg)
+
+    tallies = stats["deck-abc"].opponent_commander_tallies
+    assert tallies[96080].games == 1
+    assert tallies[96080].wins == 1
+    assert 90302 not in tallies  # our own commander is never tallied as an opponent
+
+    full_summary = card_stats.run(cfg)
+    content = (cfg.archive_dir / "card_stats" / "lagaan.md").read_text()
+    assert full_summary.decks_written == ["lagaan.md"]
+    assert "## Opponent Commanders" in content
+    assert "Sol Ring" in content
+    assert "100% (1/1)" in content
+
+
+def test_non_brawl_deck_report_omits_opponent_commanders_section(cfg, tmp_path):
+    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
+    text = _match_session_text(
+        "deck-abc", "Lagaan", course_id="course-1", match_id="match-1", winning_team_id=1,
+        format="Standard",
+    )
+    _write_session(cfg, "20260817T192832", text)
+
+    card_stats.run(cfg)
+    content = (cfg.archive_dir / "card_stats" / "lagaan.md").read_text()
+
+    assert "Opponent Commanders" not in content
 
 
 def test_missing_carddb_surfaces_as_warning_not_exception(cfg):

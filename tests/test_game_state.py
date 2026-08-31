@@ -188,6 +188,60 @@ def test_midgame_resync_with_same_game_number_is_not_a_new_game():
     assert record.final_hand == frozenset({100, 101, 102})
 
 
+def test_opponent_commander_grp_id_is_revealed_and_ours_is_excluded():
+    # Command Zone is the one confirmed exception to "opponent objects stay
+    # hidden" — both commanders reveal grpId, distinguished by ownerSeatId.
+    text = gre_full_line(
+        our_seat_id=OUR_SEAT,
+        hand_zone_id=HAND_ZONE,
+        hand=[(1, 100)],
+        command_zone_id=26,
+        command_zone_cards=[
+            (10, 90302, OUR_SEAT),  # our own commander
+            (11, 96080, 3 - OUR_SEAT),  # opponent's commander
+        ],
+    )
+
+    record = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)[0]
+
+    assert record.opponent_commander_grp_ids == frozenset({96080})
+
+
+def test_no_command_zone_means_no_opponent_commanders():
+    text = gre_full_line(our_seat_id=OUR_SEAT, hand_zone_id=HAND_ZONE, hand=[(1, 100)])
+
+    record = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)[0]
+
+    assert record.opponent_commander_grp_ids == frozenset()
+
+
+def test_opponent_commander_survives_midgame_resync():
+    text = (
+        gre_full_line(
+            our_seat_id=OUR_SEAT,
+            hand_zone_id=HAND_ZONE,
+            hand=[(1, 100)],
+            command_zone_id=26,
+            command_zone_cards=[(11, 96080, 3 - OUR_SEAT)],
+            game_number=1,
+        )
+        + gre_diff_turn_line(turn_number=3)
+        + gre_full_line(
+            our_seat_id=OUR_SEAT,
+            hand_zone_id=HAND_ZONE,
+            hand=[(1, 100)],
+            command_zone_id=26,
+            command_zone_cards=[(11, 96080, 3 - OUR_SEAT)],
+            game_number=1,
+        )
+    )
+
+    records = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)
+
+    assert len(records) == 1
+    assert records[0].opponent_commander_grp_ids == frozenset({96080})
+
+
 def test_opponent_draw_into_their_own_hand_zone_is_ignored():
     # Opponent's draw targets their own hand zone (31), not ours (35) — the
     # zone_dest filter alone should exclude it from our drawn set.

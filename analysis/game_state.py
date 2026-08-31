@@ -9,7 +9,14 @@ entire game rather than parsing one event in isolation.
 
 Only our own objects (ownerSeatId == our seat) ever reveal a grpId in this
 data — opponent's hidden-zone cards stay as bare instance ids, which is
-exactly what's needed since we only score our own deck's cards.
+exactly what's needed since we only score our own deck's cards. The one
+confirmed exception is ZoneType_Command: Brawl commanders are public
+knowledge for both players from the start of the game, so an opponent's
+commander does reveal its grpId (visibility Visibility_Public) even though
+every other opponent object stays hidden — confirmed directly against real
+archived Brawl matches, where the Command Zone is a single shared zone (no
+zone-level ownerSeatId) holding both players' commanders, distinguished by
+each object's own ownerSeatId.
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ class GameRecord:
     final_hand: frozenset[int]  # grpIds still in hand at the last known state
     mulligan_count: int
     last_turn: int | None  # None means the game ended before turnInfo ever appeared
+    opponent_commander_grp_ids: frozenset[int]  # empty outside Brawl (no Command Zone)
 
 
 @dataclass
@@ -90,6 +98,11 @@ class _GameTracker:
         # opening hand right before the first draw, and as the final-hand /
         # no-draw-fallback value once the game ends.
         self._last_hand_snapshot: set[int] = set()
+        # Every opponent commander grpId seen in a Command Zone this game —
+        # accumulated rather than snapshotted, since a commander that's cast
+        # to the battlefield (and later dies back to the Command Zone) would
+        # otherwise drop out of a point-in-time read.
+        self.opponent_commander_grp_ids: set[int] = set()
 
     def _seed_zones_and_objects(self, message: dict) -> None:
         self.zones = {}
@@ -104,6 +117,16 @@ class _GameTracker:
             ),
             None,
         )
+        self._update_opponent_commanders()
+
+    def _update_opponent_commanders(self) -> None:
+        for zone in self.zones.values():
+            if zone.zone_type != "ZoneType_Command":
+                continue
+            for instance_id in zone.object_instance_ids:
+                obj = self.objects.get(instance_id)
+                if obj is not None and obj.owner_seat_id not in (None, self.our_seat_id):
+                    self.opponent_commander_grp_ids.add(obj.grp_id)
 
     def apply_full(self, message: dict) -> None:
         game_info = message.get("gameInfo") or {}
@@ -112,6 +135,7 @@ class _GameTracker:
         self.drawn = set()
         self.mulligan_count = 0
         self.last_turn = None
+        self.opponent_commander_grp_ids = set()
 
         self._seed_zones_and_objects(message)
         self._last_hand_snapshot = self._current_hand_grp_ids()
@@ -158,6 +182,7 @@ class _GameTracker:
 
         self._merge_zones(message.get("zones"))
         self._merge_objects(message.get("gameObjects"))
+        self._update_opponent_commanders()
 
         for instance_id in drawn_instance_ids:
             obj = self.objects.get(instance_id)
@@ -259,6 +284,7 @@ class _GameTracker:
             final_hand=frozenset(self._last_hand_snapshot),
             mulligan_count=self.mulligan_count,
             last_turn=self.last_turn,
+            opponent_commander_grp_ids=frozenset(self.opponent_commander_grp_ids),
         )
 
 

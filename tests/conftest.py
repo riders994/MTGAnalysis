@@ -187,12 +187,17 @@ def gre_full_line(
     hand,  # list of (instance_id, grp_id)
     opponent_hand_zone_id: int | None = None,
     opponent_hand_instance_ids=(),
+    command_zone_id: int | None = None,
+    command_zone_cards=(),  # list of (instance_id, grp_id, owner_seat_id)
     game_number: int = 1,
     **kwargs,
 ) -> str:
     """A synthetic GameStateType_Full message: our own hand fully revealed
     (grpId present), an opponent's hand present only as bare instance ids
-    (hidden information) — matching Arena's confirmed visibility rules."""
+    (hidden information) — matching Arena's confirmed visibility rules. The
+    Command Zone is the one confirmed exception: it's a single shared zone
+    (no zone-level ownerSeatId) holding both players' commanders, each
+    object revealing its own grpId regardless of which player owns it."""
     zones = [
         {
             "zoneId": hand_zone_id,
@@ -210,12 +215,25 @@ def gre_full_line(
                 "objectInstanceIds": list(opponent_hand_instance_ids),
             }
         )
+    if command_zone_id is not None:
+        zones.append(
+            {
+                "zoneId": command_zone_id,
+                "type": "ZoneType_Command",
+                "objectInstanceIds": [instance_id for instance_id, _, _ in command_zone_cards],
+            }
+        )
 
     game_objects = [
         {"instanceId": instance_id, "grpId": grp_id, "type": "GameObjectType_Card",
          "zoneId": hand_zone_id, "ownerSeatId": our_seat_id}
         for instance_id, grp_id in hand
     ]
+    game_objects.extend(
+        {"instanceId": instance_id, "grpId": grp_id, "type": "GameObjectType_Card",
+         "zoneId": command_zone_id, "ownerSeatId": owner_seat_id}
+        for instance_id, grp_id, owner_seat_id in command_zone_cards
+    )
 
     message = {
         "type": "GREMessageType_GameStateMessage",

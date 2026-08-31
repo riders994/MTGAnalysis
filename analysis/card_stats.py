@@ -42,6 +42,12 @@ class CardTally:
 
 
 @dataclass
+class OpponentCommanderTally:
+    games: int = 0  # times we've faced a deck led by this commander
+    wins: int = 0  # times we won that matchup
+
+
+@dataclass
 class DeckStats:
     deck_id: str
     name: str
@@ -52,6 +58,9 @@ class DeckStats:
     early_forfeit_games: int = 0  # games WE conceded by EARLY_FORFEIT_MAX_TURN (or turn 0)
     early_forfeit_hand_tallies: dict[int, int] = field(default_factory=dict)  # card_id -> times stuck
     card_tallies: dict[int, CardTally] = field(default_factory=dict)
+    # Always empty outside Brawl — no Command Zone means no opponent
+    # commander is ever seen. card_id here means the commander's grpId.
+    opponent_commander_tallies: dict[int, OpponentCommanderTally] = field(default_factory=dict)
 
 
 @dataclass
@@ -92,11 +101,20 @@ def iter_outcomes(cfg: Config, summary: Summary) -> Iterator[tuple[GameOutcome, 
 
 def fold_game(target, game: GameRecord, outcome: GameOutcome, decklist_ids: set[int]) -> None:
     """Fold one parsed game into any stats object exposing mulligan_games/
-    card_tallies/early_forfeit_games/early_forfeit_hand_tallies — shared by
-    DeckStats (all-time, one deck) and reports.PeriodStats (one period,
-    possibly several decks of the same format)."""
+    card_tallies/early_forfeit_games/early_forfeit_hand_tallies/
+    opponent_commander_tallies — shared by DeckStats (all-time, one deck)
+    and reports.PeriodStats (one period, possibly several decks of the same
+    format)."""
     if game.mulligan_count > 0:
         target.mulligan_games += 1
+
+    for commander_id in game.opponent_commander_grp_ids:
+        commander_tally = target.opponent_commander_tallies.setdefault(
+            commander_id, OpponentCommanderTally()
+        )
+        commander_tally.games += 1
+        if outcome.won:
+            commander_tally.wins += 1
 
     for card_id in decklist_ids:
         tally = target.card_tallies.setdefault(card_id, CardTally())

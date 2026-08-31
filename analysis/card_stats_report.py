@@ -7,7 +7,7 @@ explicit point of this report, not something to round away or hide.
 from __future__ import annotations
 
 from .carddb import CardNames
-from .card_stats import CardTally, DeckStats
+from .card_stats import CardTally, DeckStats, OpponentCommanderTally
 from .reports import PeriodStats
 
 
@@ -70,6 +70,29 @@ def _render_card_table(card_tallies: dict[int, CardTally], names: CardNames) -> 
     )
 
 
+def _render_opponent_commanders(
+    tallies: dict[int, OpponentCommanderTally], names: CardNames
+) -> str:
+    """Empty outside Brawl (no Command Zone), so the whole section is
+    omitted there rather than shown with a placeholder — unlike Early
+    Forfeits, this genuinely doesn't apply to other formats."""
+    if not tallies:
+        return ""
+    heading = (
+        "## Opponent Commanders\n\n"
+        "_Every Brawl commander we've faced, most-played-against first — "
+        "the win rate is ours, against decks led by that commander, not a "
+        "measure of the commander's overall power._\n\n"
+    )
+    rows = sorted(
+        ((names[commander_id], tally) for commander_id, tally in tallies.items()),
+        key=lambda row: (-row[1].games, row[0]),
+    )
+    table_rows = "\n".join(f"| {name} | {tally.games} | {_rate(tally.wins, tally.games)} |" for name, tally in rows)
+    table = "| Commander | Faced | Our Win Rate |\n|---|---|---|\n" + table_rows + "\n"
+    return "\n" + heading + table
+
+
 def render_card_stats(stats: DeckStats, names: CardNames) -> str:
     header = (
         f"# {stats.name}\n\n"
@@ -83,7 +106,13 @@ def render_card_stats(stats: DeckStats, names: CardNames) -> str:
         "since they aren't tracked through the hand zone the same way._\n\n"
     )
     body = _render_card_table(stats.card_tallies, names)
-    return header + body + "\n" + _render_early_forfeits(stats, names)
+    return (
+        header
+        + body
+        + "\n"
+        + _render_early_forfeits(stats, names)
+        + _render_opponent_commanders(stats.opponent_commander_tallies, names)
+    )
 
 
 def render_period_stats(stats: PeriodStats, names: CardNames) -> str:
@@ -98,4 +127,10 @@ def render_period_stats(stats: PeriodStats, names: CardNames) -> str:
         "rate._\n\n"
     )
     body = _render_card_table(stats.card_tallies, names)
-    return header + body + "\n" + _render_early_forfeits(stats, names)
+    return (
+        header
+        + body
+        + "\n"
+        + _render_early_forfeits(stats, names)
+        + _render_opponent_commanders(stats.opponent_commander_tallies, names)
+    )
