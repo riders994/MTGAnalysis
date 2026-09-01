@@ -90,7 +90,44 @@ def test_mulliganed_hand_is_captured_from_the_sent_back_hand():
 
     assert record.mulligan_count == 1
     assert record.mulliganed_hand_grp_ids == frozenset({100, 101, 102})
+    assert record.mulliganed_hands == (frozenset({100, 101, 102}),)
     assert record.opening_hand == frozenset({200, 201})
+
+
+def test_two_mulligans_are_kept_as_separate_hands_not_unioned():
+    # A grpId (100) common to both sent-back hands must still show up in
+    # each hand's own entry — the union field would collapse it to one.
+    text = (
+        gre_full_line(
+            our_seat_id=OUR_SEAT,
+            hand_zone_id=HAND_ZONE,
+            hand=[(1, 100), (2, 101), (3, 102)],
+        )
+        + gre_diff_mulligan_line(
+            old_instance_ids=[1, 2, 3],
+            new_hand=[(11, 100), (12, 200)],
+            hand_zone_id=HAND_ZONE,
+            our_seat_id=OUR_SEAT,
+            mulligan_count=1,
+        )
+        + gre_diff_mulligan_line(
+            old_instance_ids=[11, 12],
+            new_hand=[(21, 300)],
+            hand_zone_id=HAND_ZONE,
+            our_seat_id=OUR_SEAT,
+            mulligan_count=2,
+        )
+        + gre_diff_draw_line(
+            drawn_instance_id=22, drawn_grp_id=301, hand_zone_id=HAND_ZONE, our_seat_id=OUR_SEAT
+        )
+    )
+
+    record = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)[0]
+
+    assert record.mulligan_count == 2
+    assert record.mulliganed_hands == (frozenset({100, 101, 102}), frozenset({100, 200}))
+    assert record.mulliganed_hand_grp_ids == frozenset({100, 101, 102, 200})
+    assert record.opening_hand == frozenset({300})
 
 
 def test_no_mulligan_means_no_mulliganed_hand():
@@ -99,6 +136,7 @@ def test_no_mulligan_means_no_mulliganed_hand():
     record = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)[0]
 
     assert record.mulliganed_hand_grp_ids == frozenset()
+    assert record.mulliganed_hands == ()
 
 
 def test_no_draw_before_game_ends_falls_back_to_last_hand_snapshot():

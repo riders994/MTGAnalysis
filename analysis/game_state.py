@@ -53,6 +53,11 @@ class GameRecord:
     # (not the hand we kept — that's opening_hand). Empty if mulligan_count
     # is 0.
     mulliganed_hand_grp_ids: frozenset[int]
+    # Same hands, kept separate rather than unioned — needed to count e.g.
+    # lands per sent-back hand when a game had 2+ mulligans, since the union
+    # above collapses a grpId common to two different sent-back hands into
+    # one entry. In mulligan order; empty if mulligan_count is 0.
+    mulliganed_hands: tuple[frozenset[int], ...]
     # Land-use tracking, all our-own-seat only (same visibility filtering as
     # opening_hand/drawn above). Kept generic here — cross-referencing against
     # a specific decklist's basics/DFCs/abilities is card_stats.py's job.
@@ -110,14 +115,14 @@ class _GameTracker:
         self.opening_hand: set[int] | None = None
         self.drawn: set[int] = set()
         self.mulligan_count = 0
-        # Union of grpIds across every hand sent back on a mulligan — each
+        # Every hand sent back on a mulligan, one entry per mulligan, each
         # captured from _last_hand_snapshot at the moment mulligan_count is
         # seen to increase, i.e. before that same diff's own zone/object
         # changes replace it with the fresh hand.
-        self.mulliganed_hand_grp_ids: set[int] = set()
+        self.mulliganed_hands: list[set[int]] = []
         # Land-use tracking — see GameRecord's matching fields for what each
         # one means; reset per-game in apply_full, preserved across a
-        # mid-game reseed the same way drawn/mulliganed_hand_grp_ids are.
+        # mid-game reseed the same way drawn/mulliganed_hands are.
         self.land_play_counts: dict[int, int] = {}
         self.land_first_play_turn: dict[int, int] = {}
         self.cast_grp_ids: dict[int, int] = {}
@@ -170,7 +175,7 @@ class _GameTracker:
         self.opening_hand = None
         self.drawn = set()
         self.mulligan_count = 0
-        self.mulliganed_hand_grp_ids = set()
+        self.mulliganed_hands = []
         self.last_turn = None
         self.opponent_commander_grp_ids = set()
         self.land_play_counts = {}
@@ -216,7 +221,7 @@ class _GameTracker:
         previous_mulligan_count = self.mulligan_count
         self._merge_players(message.get("players"))
         if self.mulligan_count > previous_mulligan_count:
-            self.mulliganed_hand_grp_ids |= self._last_hand_snapshot
+            self.mulliganed_hands.append(set(self._last_hand_snapshot))
 
         turn_info = message.get("turnInfo") or {}
         if "turnNumber" in turn_info:
@@ -406,6 +411,8 @@ class _GameTracker:
 
     def finalize(self, match_id: str) -> GameRecord:
         opening_hand = self.opening_hand if self.opening_hand is not None else self._last_hand_snapshot
+        mulliganed_hands = tuple(frozenset(hand) for hand in self.mulliganed_hands)
+        mulliganed_hand_grp_ids = frozenset().union(*mulliganed_hands) if mulliganed_hands else frozenset()
         return GameRecord(
             match_id=match_id,
             game_number=self.game_number,
@@ -415,7 +422,8 @@ class _GameTracker:
             mulligan_count=self.mulligan_count,
             last_turn=self.last_turn,
             opponent_commander_grp_ids=frozenset(self.opponent_commander_grp_ids),
-            mulliganed_hand_grp_ids=frozenset(self.mulliganed_hand_grp_ids),
+            mulliganed_hand_grp_ids=mulliganed_hand_grp_ids,
+            mulliganed_hands=mulliganed_hands,
             land_play_counts=dict(self.land_play_counts),
             land_first_play_turn=dict(self.land_first_play_turn),
             cast_grp_ids=dict(self.cast_grp_ids),

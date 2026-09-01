@@ -237,12 +237,18 @@ def _render_land_use(stats: DeckStats | PeriodStats, names: CardNames, land_info
     gp_losses = stats.gp - stats.gp_wins
     total_played = sum(stats.land_play_tallies.values())
     total_played_wins = sum(stats.land_play_tallies_wins.values())
+    kept_hand_land_count_losses = stats.kept_hand_land_count - stats.kept_hand_land_count_wins
 
     heading = (
         "## Land Use\n\n"
         f"**Lands played per game:** {_avg(total_played, stats.gp)} overall — "
         f"{_avg(total_played_wins, stats.gp_wins)} in wins — "
         f"{_avg(total_played - total_played_wins, gp_losses)} in losses\n\n"
+        f"**Lands in hand:** kept hand {_avg(stats.kept_hand_land_count, stats.gp)} overall — "
+        f"{_avg(stats.kept_hand_land_count_wins, stats.gp_wins)} in wins — "
+        f"{_avg(kept_hand_land_count_losses, gp_losses)} in losses — vs. "
+        f"{_avg(stats.mulliganed_hand_land_count, stats.mulliganed_hand_count)} in a hand sent back "
+        "on a mulligan\n\n"
     )
     basics = (
         "### Basic Lands\n\n"

@@ -51,6 +51,10 @@ class PeriodStats:
     gp_wins: int = 0
     mulligan_games: int = 0
     mulliganed_hand_tallies: dict[int, int] = field(default_factory=dict)
+    mulliganed_hand_count: int = 0
+    mulliganed_hand_land_count: int = 0
+    kept_hand_land_count: int = 0
+    kept_hand_land_count_wins: int = 0
     early_forfeit_games: int = 0
     early_forfeit_hand_tallies: dict[int, int] = field(default_factory=dict)
     card_tallies: dict[int, CardTally] = field(default_factory=dict)

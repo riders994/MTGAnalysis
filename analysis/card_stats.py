@@ -64,6 +64,12 @@ class DeckStats:
     gp_wins: int = 0
     mulligan_games: int = 0  # games where we took at least one mulligan
     mulliganed_hand_tallies: dict[int, int] = field(default_factory=dict)  # card_id -> times sent back
+    # Land-count-in-hand tracking. "Sent back" is per sent-back hand (a game
+    # with 2+ mulligans contributes 2+ hands); "kept" is per game (opening_hand).
+    mulliganed_hand_count: int = 0  # total hands sent back, across all games
+    mulliganed_hand_land_count: int = 0  # summed lands across every sent-back hand
+    kept_hand_land_count: int = 0  # summed lands across every kept (opening) hand
+    kept_hand_land_count_wins: int = 0
     early_forfeit_games: int = 0  # games WE conceded by EARLY_FORFEIT_MAX_TURN (or turn 0)
     early_forfeit_hand_tallies: dict[int, int] = field(default_factory=dict)  # card_id -> times stuck
     card_tallies: dict[int, CardTally] = field(default_factory=dict)
@@ -132,10 +138,12 @@ def fold_game(
     target, game: GameRecord, outcome: GameOutcome, decklist_ids: set[int], land_info: LandInfo
 ) -> None:
     """Fold one parsed game into any stats object exposing mulligan_games/
-    mulliganed_hand_tallies/card_tallies/early_forfeit_games/
-    early_forfeit_hand_tallies/opponent_commander_tallies/the land_* tallies
-    — shared by DeckStats (all-time, one deck) and reports.PeriodStats (one
-    period, possibly several decks of the same format)."""
+    mulliganed_hand_tallies/mulliganed_hand_count/mulliganed_hand_land_count/
+    kept_hand_land_count/kept_hand_land_count_wins/card_tallies/
+    early_forfeit_games/early_forfeit_hand_tallies/opponent_commander_tallies/
+    the land_* tallies — shared by DeckStats (all-time, one deck) and
+    reports.PeriodStats (one period, possibly several decks of the same
+    format)."""
     if game.mulligan_count > 0:
         target.mulligan_games += 1
         for card_id in game.mulliganed_hand_grp_ids:
@@ -143,6 +151,19 @@ def fold_game(
                 target.mulliganed_hand_tallies[card_id] = (
                     target.mulliganed_hand_tallies.get(card_id, 0) + 1
                 )
+
+    for hand in game.mulliganed_hands:
+        target.mulliganed_hand_count += 1
+        target.mulliganed_hand_land_count += sum(
+            1 for card_id in hand if card_id in decklist_ids and land_info[card_id].is_land
+        )
+
+    kept_hand_lands = sum(
+        1 for card_id in game.opening_hand if card_id in decklist_ids and land_info[card_id].is_land
+    )
+    target.kept_hand_land_count += kept_hand_lands
+    if outcome.won:
+        target.kept_hand_land_count_wins += kept_hand_lands
 
     commander_early_concede = _is_early_self_forfeit(outcome, game, COMMANDER_EARLY_CONCEDE_MAX_TURN)
     for commander_id in game.opponent_commander_grp_ids:

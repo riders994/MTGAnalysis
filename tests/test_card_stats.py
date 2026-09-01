@@ -450,6 +450,71 @@ def test_land_use_section_reports_basics_split_wins_and_losses(cfg, tmp_path):
     assert "| Plains | 1.50 (3/2) | 2.00 (2/1) | 1.00 (1/1) |" in content
 
 
+def test_land_use_section_reports_kept_vs_mulliganed_hand_land_counts(cfg, tmp_path):
+    PLAINS, ISLAND, FOREST, SOL_RING = 91301, 75022, 91300, 96080
+    write_carddb_snapshot(
+        cfg,
+        tmp_path,
+        {PLAINS: "Plains", ISLAND: "Island", FOREST: "Forest", SOL_RING: "Sol Ring"},
+        lands={
+            PLAINS: {"types": "5", "supertypes": "1"},
+            ISLAND: {"types": "5", "supertypes": "1"},
+            FOREST: {"types": "5", "supertypes": "1"},
+        },
+    )
+    deck_save = deck_upsert_line(
+        "deck-abc", "Lagaan", version="1",
+        main_deck=[(PLAINS, 4), (ISLAND, 4), (FOREST, 4), (SOL_RING, 1)],
+    ) + event_set_deck_response_line("course-1", "deck-abc", "Lagaan")
+
+    # Win: kept hand (no mulligan) has 2 lands (Plains, Island).
+    win_game = (
+        deck_save
+        + match_room_state_playing_line("match-1", [(OUR_ID, 1, 1), (OPPONENT_ID, 2, 2)], our_id=OUR_ID)
+        + gre_full_line(our_seat_id=1, hand_zone_id=35, hand=[(1, PLAINS), (2, ISLAND)])
+        + gre_diff_draw_line(drawn_instance_id=3, drawn_grp_id=SOL_RING, hand_zone_id=35, our_seat_id=1)
+        + match_room_state_completed_line("match-1", winning_team_id=1, our_id=OUR_ID)
+    )
+    _write_session(cfg, "20260817T100000", win_game, suffix="aaaaaaaa")
+
+    # Loss: kept hand (no mulligan) has 1 land (Plains).
+    loss_game = (
+        deck_save
+        + match_room_state_playing_line("match-2", [(OUR_ID, 1, 1), (OPPONENT_ID, 2, 2)], our_id=OUR_ID)
+        + gre_full_line(our_seat_id=1, hand_zone_id=35, hand=[(4, PLAINS)])
+        + gre_diff_draw_line(drawn_instance_id=5, drawn_grp_id=SOL_RING, hand_zone_id=35, our_seat_id=1)
+        + match_room_state_completed_line("match-2", winning_team_id=2, our_id=OUR_ID)
+    )
+    _write_session(cfg, "20260817T110000", loss_game, suffix="bbbbbbbb")
+
+    # Loss, with a mulligan: sent-back hand has 3 lands (Plains, Island,
+    # Forest); kept hand (after the mulligan) has 1 land (Plains).
+    mulligan_game = (
+        deck_save
+        + match_room_state_playing_line("match-3", [(OUR_ID, 1, 1), (OPPONENT_ID, 2, 2)], our_id=OUR_ID)
+        + gre_full_line(our_seat_id=1, hand_zone_id=35, hand=[(6, PLAINS), (7, ISLAND), (8, FOREST)])
+        + gre_diff_mulligan_line(
+            old_instance_ids=[6, 7, 8],
+            new_hand=[(16, PLAINS)],
+            hand_zone_id=35,
+            our_seat_id=1,
+            mulligan_count=1,
+        )
+        + gre_diff_draw_line(drawn_instance_id=17, drawn_grp_id=SOL_RING, hand_zone_id=35, our_seat_id=1)
+        + match_room_state_completed_line("match-3", winning_team_id=2, our_id=OUR_ID)
+    )
+    _write_session(cfg, "20260817T120000", mulligan_game, suffix="cccccccc")
+
+    card_stats.run(cfg)
+    content = (cfg.archive_dir / "reports" / "card_stats" / "lagaan.md").read_text()
+
+    assert (
+        "**Lands in hand:** kept hand 1.33 (4/3) overall — 2.00 (2/1) in wins — "
+        "1.00 (2/2) in losses — vs. 3.00 (3/1) in a hand sent back on a mulligan"
+        in content
+    )
+
+
 def test_land_use_section_reports_nonbasic_avg_turn_played(cfg, tmp_path):
     OVERGROWN_TOMB = 68734
     write_carddb_snapshot(
