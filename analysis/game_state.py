@@ -53,6 +53,13 @@ class GameRecord:
     # (not the hand we kept — that's opening_hand). Empty if mulligan_count
     # is 0.
     mulliganed_hand_grp_ids: frozenset[int]
+    # Land-use tracking, all our-own-seat only (same visibility filtering as
+    # opening_hand/drawn above). Kept generic here — cross-referencing against
+    # a specific decklist's basics/DFCs/abilities is card_stats.py's job.
+    land_play_counts: dict[int, int]  # grpId -> times we played it as a land
+    land_first_play_turn: dict[int, int]  # grpId -> turn of its first play this game
+    cast_grp_ids: dict[int, int]  # grpId -> times we cast it as a spell
+    ability_activation_counts: dict[tuple[int, int], int]  # (source grpId, ability id) -> times activated
 
 
 @dataclass
@@ -108,6 +115,13 @@ class _GameTracker:
         # seen to increase, i.e. before that same diff's own zone/object
         # changes replace it with the fresh hand.
         self.mulliganed_hand_grp_ids: set[int] = set()
+        # Land-use tracking — see GameRecord's matching fields for what each
+        # one means; reset per-game in apply_full, preserved across a
+        # mid-game reseed the same way drawn/mulliganed_hand_grp_ids are.
+        self.land_play_counts: dict[int, int] = {}
+        self.land_first_play_turn: dict[int, int] = {}
+        self.cast_grp_ids: dict[int, int] = {}
+        self.ability_activation_counts: dict[tuple[int, int], int] = {}
         # None until the first turnInfo message arrives — a game that ends
         # (e.g. an early concession) before this ever appears is turn 0: not
         # even a single turn was completed.
@@ -159,6 +173,10 @@ class _GameTracker:
         self.mulliganed_hand_grp_ids = set()
         self.last_turn = None
         self.opponent_commander_grp_ids = set()
+        self.land_play_counts = {}
+        self.land_first_play_turn = {}
+        self.cast_grp_ids = {}
+        self.ability_activation_counts = {}
 
         self._seed_zones_and_objects(message)
         self._last_hand_snapshot = self._current_hand_grp_ids()
@@ -185,6 +203,9 @@ class _GameTracker:
 
     def apply_diff(self, message: dict) -> None:
         drawn_instance_ids = self._draw_instance_ids(message.get("annotations"))
+        played_land_instance_ids = self._hand_exit_instance_ids(message.get("annotations"), "PlayLand")
+        cast_spell_instance_ids = self._hand_exit_instance_ids(message.get("annotations"), "CastSpell")
+        ability_activations = self._ability_activations(message.get("annotations"))
 
         # A mulligan's players[].mulliganCount bump and its hand-replacement
         # (diffDeletedInstanceIds/zones/gameObjects) land in the SAME diff —
@@ -221,6 +242,24 @@ class _GameTracker:
             if obj is not None and obj.owner_seat_id == self.our_seat_id:
                 self.drawn.add(obj.grp_id)
 
+        for instance_id in played_land_instance_ids:
+            obj = self.objects.get(instance_id)
+            if obj is not None and obj.owner_seat_id == self.our_seat_id:
+                self.land_play_counts[obj.grp_id] = self.land_play_counts.get(obj.grp_id, 0) + 1
+                if self.last_turn is not None:
+                    self.land_first_play_turn.setdefault(obj.grp_id, self.last_turn)
+
+        for instance_id in cast_spell_instance_ids:
+            obj = self.objects.get(instance_id)
+            if obj is not None and obj.owner_seat_id == self.our_seat_id:
+                self.cast_grp_ids[obj.grp_id] = self.cast_grp_ids.get(obj.grp_id, 0) + 1
+
+        for source_instance_id, ability_id in ability_activations:
+            obj = self.objects.get(source_instance_id)
+            if obj is not None:
+                key = (obj.grp_id, ability_id)
+                self.ability_activation_counts[key] = self.ability_activation_counts.get(key, 0) + 1
+
         self._last_hand_snapshot = self._current_hand_grp_ids()
 
     def _draw_instance_ids(self, annotations: list[dict] | None) -> list[int]:
@@ -238,6 +277,64 @@ class _GameTracker:
                 continue
             drawn_ids.extend(annotation.get("affectedIds") or [])
         return drawn_ids
+
+    def _hand_exit_instance_ids(self, annotations: list[dict] | None, category_name: str) -> list[int]:
+        """Instance ids that left our hand this message via a ZoneTransfer of
+        the given category — "PlayLand" (to the battlefield) or "CastSpell"
+        (to the stack). Mirrors _draw_instance_ids but filters zone_src
+        (leaving our hand) rather than zone_dest (entering it)."""
+        ids = []
+        for annotation in annotations or []:
+            if "AnnotationType_ZoneTransfer" not in (annotation.get("type") or []):
+                continue
+            details = {d.get("key"): d for d in annotation.get("details") or []}
+            category = (details.get("category") or {}).get("valueString") or []
+            if category_name not in category:
+                continue
+            zone_src = (details.get("zone_src") or {}).get("valueInt32") or []
+            if self.hand_zone_id not in zone_src:
+                continue
+            ids.extend(annotation.get("affectedIds") or [])
+        return ids
+
+    def _ability_activations(self, annotations: list[dict] | None) -> list[tuple[int, int]]:
+        """(source instance id, ability id) for every ability WE activated
+        this message. AnnotationType_UserActionTaken records the action
+        (affectorId is the acting player's seat; details.actionType 4 is
+        "activate an ability", with details.abilityGrpId — despite the name,
+        an Abilities.Id, not a Cards.GrpId — set to the ability activated).
+        Its affectedIds[0] is an ability-instance id, not a permanent, so the
+        source permanent is found via a same-diff
+        AnnotationType_AbilityInstanceCreated annotation sharing that same
+        id in its own affectedIds[0], whose affectorId is the source
+        permanent's instance id. Confirmed against real archived data."""
+        ability_sources: dict[int, int] = {}
+        for annotation in annotations or []:
+            if "AnnotationType_AbilityInstanceCreated" not in (annotation.get("type") or []):
+                continue
+            affected = annotation.get("affectedIds") or []
+            source = annotation.get("affectorId")
+            if affected and source is not None:
+                ability_sources[affected[0]] = source
+
+        activations = []
+        for annotation in annotations or []:
+            if "AnnotationType_UserActionTaken" not in (annotation.get("type") or []):
+                continue
+            if annotation.get("affectorId") != self.our_seat_id:
+                continue
+            details = {d.get("key"): d for d in annotation.get("details") or []}
+            action_type = (details.get("actionType") or {}).get("valueInt32") or []
+            ability_id = (details.get("abilityGrpId") or {}).get("valueInt32") or []
+            if action_type != [4] or not ability_id or ability_id[0] == 0:
+                continue
+            affected = annotation.get("affectedIds") or []
+            if not affected:
+                continue
+            source_instance_id = ability_sources.get(affected[0])
+            if source_instance_id is not None:
+                activations.append((source_instance_id, ability_id[0]))
+        return activations
 
     def _merge_players(self, players: list[dict] | None) -> None:
         """A players[] update can carry just one player (e.g. their own
@@ -319,6 +416,10 @@ class _GameTracker:
             last_turn=self.last_turn,
             opponent_commander_grp_ids=frozenset(self.opponent_commander_grp_ids),
             mulliganed_hand_grp_ids=frozenset(self.mulliganed_hand_grp_ids),
+            land_play_counts=dict(self.land_play_counts),
+            land_first_play_turn=dict(self.land_first_play_turn),
+            cast_grp_ids=dict(self.cast_grp_ids),
+            ability_activation_counts=dict(self.ability_activation_counts),
         )
 
 

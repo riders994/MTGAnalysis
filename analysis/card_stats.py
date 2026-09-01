@@ -15,7 +15,7 @@ from datetime import datetime
 
 from collector.config import Config
 
-from .carddb import CardDbUnavailable, load_card_names
+from .carddb import CardDbUnavailable, LandInfo, load_card_names, load_land_info
 from .changelog import assign_slugs
 from .deck_changelog import collect_saves, merge_saves_by_identity
 from .game_state import GameRecord, parse_games
@@ -73,6 +73,16 @@ class DeckStats:
     # Our own commander(s) — empty outside Brawl. 2 entries for a
     # Partner/Background pairing.
     own_commander_grp_ids: frozenset[int] = field(default_factory=frozenset)
+    # Land-use tracking — all keyed by grpId (land identity), all restricted
+    # to this deck's own decklist. "_wins" variants are the subset of the
+    # matching total tallied only from games we won (losses = total - wins).
+    land_play_tallies: dict[int, int] = field(default_factory=dict)  # times played as a land
+    land_play_tallies_wins: dict[int, int] = field(default_factory=dict)
+    land_turn_tallies: dict[int, int] = field(default_factory=dict)  # summed first-play turn
+    land_turn_game_counts: dict[int, int] = field(default_factory=dict)  # games it was played in
+    other_face_cast_tallies: dict[int, int] = field(default_factory=dict)  # times its other face was cast
+    land_ability_tallies: dict[int, int] = field(default_factory=dict)  # non-mana ability activations
+    land_ability_tallies_wins: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -118,12 +128,14 @@ def iter_outcomes(cfg: Config, summary: Summary) -> Iterator[tuple[GameOutcome, 
             yield outcome, text, dt
 
 
-def fold_game(target, game: GameRecord, outcome: GameOutcome, decklist_ids: set[int]) -> None:
+def fold_game(
+    target, game: GameRecord, outcome: GameOutcome, decklist_ids: set[int], land_info: LandInfo
+) -> None:
     """Fold one parsed game into any stats object exposing mulligan_games/
     mulliganed_hand_tallies/card_tallies/early_forfeit_games/
-    early_forfeit_hand_tallies/opponent_commander_tallies — shared by
-    DeckStats (all-time, one deck) and reports.PeriodStats (one period,
-    possibly several decks of the same format)."""
+    early_forfeit_hand_tallies/opponent_commander_tallies/the land_* tallies
+    — shared by DeckStats (all-time, one deck) and reports.PeriodStats (one
+    period, possibly several decks of the same format)."""
     if game.mulligan_count > 0:
         target.mulligan_games += 1
         for card_id in game.mulliganed_hand_grp_ids:
@@ -166,10 +178,56 @@ def fold_game(target, game: GameRecord, outcome: GameOutcome, decklist_ids: set[
                     target.early_forfeit_hand_tallies.get(card_id, 0) + 1
                 )
 
+    for card_id, count in game.land_play_counts.items():
+        if card_id not in decklist_ids:
+            continue
+        target.land_play_tallies[card_id] = target.land_play_tallies.get(card_id, 0) + count
+        if outcome.won:
+            target.land_play_tallies_wins[card_id] = (
+                target.land_play_tallies_wins.get(card_id, 0) + count
+            )
+
+    for card_id, turn in game.land_first_play_turn.items():
+        if card_id not in decklist_ids:
+            continue
+        target.land_turn_tallies[card_id] = target.land_turn_tallies.get(card_id, 0) + turn
+        target.land_turn_game_counts[card_id] = target.land_turn_game_counts.get(card_id, 0) + 1
+
+    for card_id in decklist_ids:
+        other_face_grp_ids = land_info[card_id].other_face_grp_ids
+        if not other_face_grp_ids:
+            continue
+        cast_count = sum(game.cast_grp_ids.get(other_id, 0) for other_id in other_face_grp_ids)
+        if cast_count:
+            target.other_face_cast_tallies[card_id] = (
+                target.other_face_cast_tallies.get(card_id, 0) + cast_count
+            )
+
+    for card_id in decklist_ids:
+        non_mana_ability_ids = land_info[card_id].non_mana_ability_ids
+        if not non_mana_ability_ids:
+            continue
+        activation_count = sum(
+            game.ability_activation_counts.get((card_id, ability_id), 0)
+            for ability_id in non_mana_ability_ids
+        )
+        if activation_count:
+            target.land_ability_tallies[card_id] = (
+                target.land_ability_tallies.get(card_id, 0) + activation_count
+            )
+            if outcome.won:
+                target.land_ability_tallies_wins[card_id] = (
+                    target.land_ability_tallies_wins.get(card_id, 0) + activation_count
+                )
+
 
 def collect_card_stats(cfg: Config) -> tuple[dict[str, DeckStats], Summary]:
     raw_by_deck_saves, _ = collect_saves(cfg)
     by_deck_saves, deck_id_to_canonical = merge_saves_by_identity(raw_by_deck_saves)
+    try:
+        land_info = load_land_info(cfg)
+    except CardDbUnavailable:
+        land_info = LandInfo.empty()
     summary = Summary()
 
     stats: dict[str, DeckStats] = {}
@@ -202,7 +260,7 @@ def collect_card_stats(cfg: Config) -> tuple[dict[str, DeckStats], Summary]:
         games = parse_games(span_text, match_id=outcome.match_id, our_seat_id=outcome.our_seat_id)
         for game in games:
             summary.games_parsed += 1
-            fold_game(deck_stats, game, outcome, decklist_ids[canonical])
+            fold_game(deck_stats, game, outcome, decklist_ids[canonical], land_info)
 
     return stats, summary
 
@@ -224,6 +282,7 @@ def run(cfg: Config) -> Summary:
 
     try:
         names = load_card_names(cfg)
+        land_info = load_land_info(cfg)
     except CardDbUnavailable as exc:
         summary.warnings.append(str(exc))
         return summary
@@ -237,7 +296,7 @@ def run(cfg: Config) -> Summary:
 
     for canonical, deck_stats in stats.items():
         dest = card_stats_dir / f"{slugs[canonical]}.md"
-        dest.write_text(render_card_stats(deck_stats, names), encoding="utf-8")
+        dest.write_text(render_card_stats(deck_stats, names, land_info), encoding="utf-8")
         summary.decks_written.append(dest.name)
 
     return summary

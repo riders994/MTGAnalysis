@@ -7,3 +7,9 @@ def format_rate(wins: int, n: int) -> str:
     if not n:
         return "—"
     return f"{wins / n:.0%} ({wins}/{n})"
+
+
+def format_avg(total: int, n: int) -> str:
+    if not n:
+        return "—"
+    return f"{total / n:.2f} ({total}/{n})"

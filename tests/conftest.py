@@ -1,4 +1,6 @@
+import gzip
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -52,6 +54,70 @@ def cfg(tmp_path: Path) -> Config:
     config.player_log.parent.mkdir(parents=True, exist_ok=True)
     config.ensure_dirs()
     return config
+
+
+def write_carddb_snapshot(
+    cfg,
+    tmp_path: Path,
+    cards: dict[int, str],
+    *,
+    lands: dict[int, dict] | None = None,
+    abilities: dict[int, tuple[int, int]] | None = None,
+) -> None:
+    """A synthetic carddb snapshot: Cards + Localizations_enUS (name lookup),
+    plus the Types/Supertypes/LinkedFaceGrpIds/AbilityIds columns and
+    Abilities table analysis/carddb.py's load_land_info also queries.
+
+    `lands` optionally overrides a card's land-relevant columns by grpId —
+    keys `types`/`supertypes`/`linked_face_grp_ids`/`ability_ids`, raw
+    carddb-format strings (e.g. types="5" for Land, supertypes="1" for
+    Basic, ability_ids="1002:0,50001:0"). `abilities` optionally seeds the
+    Abilities table: ability_id -> (Category, SubCategory)."""
+    lands = lands or {}
+    abilities = abilities or {}
+
+    carddb_dir = cfg.snapshots_dir / "carddb"
+    carddb_dir.mkdir(parents=True, exist_ok=True)
+
+    db_path = tmp_path / "carddb.sqlite"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "CREATE TABLE Cards (GrpId INTEGER PRIMARY KEY, TitleId INTEGER, "
+            "Types TEXT, Supertypes TEXT, LinkedFaceGrpIds TEXT, AbilityIds TEXT)"
+        )
+        conn.execute("CREATE TABLE Localizations_enUS (LocId INTEGER PRIMARY KEY, Loc TEXT)")
+        conn.execute(
+            "CREATE TABLE Abilities (Id INTEGER PRIMARY KEY, Category INTEGER, SubCategory INTEGER)"
+        )
+        for grp_id, name in cards.items():
+            title_id = grp_id + 1000
+            land = lands.get(grp_id, {})
+            conn.execute(
+                "INSERT INTO Cards (GrpId, TitleId, Types, Supertypes, LinkedFaceGrpIds, AbilityIds) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    grp_id,
+                    title_id,
+                    land.get("types", ""),
+                    land.get("supertypes", ""),
+                    land.get("linked_face_grp_ids", ""),
+                    land.get("ability_ids", ""),
+                ),
+            )
+            conn.execute("INSERT INTO Localizations_enUS (LocId, Loc) VALUES (?, ?)", (title_id, name))
+        for ability_id, (category, subcategory) in abilities.items():
+            conn.execute(
+                "INSERT INTO Abilities (Id, Category, SubCategory) VALUES (?, ?, ?)",
+                (ability_id, category, subcategory),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    dest = carddb_dir / "Raw_CardDatabase_test.gz"
+    with open(db_path, "rb") as src, gzip.open(dest, "wb") as out:
+        out.write(src.read())
 
 
 def deck_upsert_line(
@@ -361,6 +427,104 @@ def gre_diff_draw_line(
                 {"instanceId": drawn_instance_id, "grpId": drawn_grp_id,
                  "type": "GameObjectType_Card", "zoneId": hand_zone_id,
                  "ownerSeatId": our_seat_id}
+            ],
+        },
+    }
+    return _gre_line([message], **kwargs)
+
+
+def gre_diff_play_land_line(
+    *, instance_id: int, grp_id: int, hand_zone_id: int, battlefield_zone_id: int,
+    our_seat_id: int, **kwargs
+) -> str:
+    """A synthetic land-drop diff: a ZoneTransfer annotation (category
+    PlayLand) leaving our hand zone, plus the gameObjects entry moving the
+    same instance to the battlefield."""
+    message = {
+        "type": "GREMessageType_GameStateMessage",
+        "gameStateMessage": {
+            "type": "GameStateType_Diff",
+            "annotations": [
+                {
+                    "affectedIds": [instance_id],
+                    "type": ["AnnotationType_ZoneTransfer"],
+                    "details": [
+                        {"key": "zone_src", "valueInt32": [hand_zone_id]},
+                        {"key": "zone_dest", "valueInt32": [battlefield_zone_id]},
+                        {"key": "category", "valueString": ["PlayLand"]},
+                    ],
+                }
+            ],
+            "gameObjects": [
+                {"instanceId": instance_id, "grpId": grp_id, "type": "GameObjectType_Card",
+                 "zoneId": battlefield_zone_id, "ownerSeatId": our_seat_id}
+            ],
+        },
+    }
+    return _gre_line([message], **kwargs)
+
+
+def gre_diff_cast_spell_line(
+    *, instance_id: int, grp_id: int, hand_zone_id: int, stack_zone_id: int,
+    our_seat_id: int, **kwargs
+) -> str:
+    """A synthetic spell-cast diff: a ZoneTransfer annotation (category
+    CastSpell) leaving our hand zone, plus the gameObjects entry moving the
+    same instance to the stack — used for a modal-DFC/adventure land's other
+    (non-land) face, which carries its own distinct grpId."""
+    message = {
+        "type": "GREMessageType_GameStateMessage",
+        "gameStateMessage": {
+            "type": "GameStateType_Diff",
+            "annotations": [
+                {
+                    "affectedIds": [instance_id],
+                    "type": ["AnnotationType_ZoneTransfer"],
+                    "details": [
+                        {"key": "zone_src", "valueInt32": [hand_zone_id]},
+                        {"key": "zone_dest", "valueInt32": [stack_zone_id]},
+                        {"key": "category", "valueString": ["CastSpell"]},
+                    ],
+                }
+            ],
+            "gameObjects": [
+                {"instanceId": instance_id, "grpId": grp_id, "type": "GameObjectType_Card",
+                 "zoneId": stack_zone_id, "ownerSeatId": our_seat_id}
+            ],
+        },
+    }
+    return _gre_line([message], **kwargs)
+
+
+def gre_diff_activate_ability_line(
+    *, source_instance_id: int, ability_instance_id: int, ability_id: int,
+    acting_seat_id: int, **kwargs
+) -> str:
+    """A synthetic ability-activation diff: an AbilityInstanceCreated
+    annotation (affectorId = source permanent's instance id, affectedIds =
+    [new ability-instance id]) paired with a UserActionTaken annotation
+    (affectorId = acting player's seat, actionType 4, abilityGrpId =
+    the Abilities.Id activated) — confirmed real shape, see
+    game_state.py's _ability_activations."""
+    message = {
+        "type": "GREMessageType_GameStateMessage",
+        "gameStateMessage": {
+            "type": "GameStateType_Diff",
+            "annotations": [
+                {
+                    "affectorId": source_instance_id,
+                    "affectedIds": [ability_instance_id],
+                    "type": ["AnnotationType_AbilityInstanceCreated"],
+                },
+                {
+                    "affectorId": acting_seat_id,
+                    "affectedIds": [ability_instance_id],
+                    "type": ["AnnotationType_UserActionTaken"],
+                    "details": [
+                        {"key": "actionType", "valueInt32": [4]},
+                        {"key": "abilityGrpId", "valueInt32": [ability_id]},
+                    ],
+                },
             ],
         },
     }

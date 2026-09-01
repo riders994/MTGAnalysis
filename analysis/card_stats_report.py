@@ -6,8 +6,9 @@ explicit point of this report, not something to round away or hide.
 
 from __future__ import annotations
 
-from .carddb import CardNames
+from .carddb import CardNames, LandInfo
 from .card_stats import CardTally, DeckStats, OpponentCommanderTally
+from .rates import format_avg as _avg
 from .rates import format_rate as _rate
 from .reports import PeriodStats
 
@@ -117,6 +118,150 @@ def _render_card_table(card_tallies: dict[int, CardTally], names: CardNames) -> 
     )
 
 
+def _split_by_basic(tallies: dict[int, int], land_info: LandInfo) -> tuple[dict[int, int], dict[int, int]]:
+    """Splits a grpId-keyed tally into (basic-land, non-basic-land) halves —
+    must happen before any by-name merge, which loses the grpId this
+    classification needs."""
+    basics: dict[int, int] = {}
+    non_basics: dict[int, int] = {}
+    for card_id, value in tallies.items():
+        (basics if land_info[card_id].is_basic else non_basics)[card_id] = value
+    return basics, non_basics
+
+
+def _render_basic_lands(
+    land_play_tallies: dict[int, int],
+    land_play_tallies_wins: dict[int, int],
+    land_info: LandInfo,
+    names: CardNames,
+    gp: int,
+    gp_wins: int,
+) -> str:
+    basics, _ = _split_by_basic(land_play_tallies, land_info)
+    if not basics:
+        return "_No basic lands played yet._\n"
+    basics_wins = {card_id: v for card_id, v in land_play_tallies_wins.items() if card_id in basics}
+    totals = _grouped_by_name(basics, names)
+    wins = _grouped_by_name(basics_wins, names)
+    rows = sorted((name, total, wins.get(name, 0)) for name, total in totals.items())
+    table_rows = "\n".join(
+        f"| {name} | {_avg(total, gp)} | {_avg(won, gp_wins)} | {_avg(total - won, gp - gp_wins)} |"
+        for name, total, won in rows
+    )
+    return (
+        "| Land | Avg Played (Overall) | Avg Played (Wins) | Avg Played (Losses) |\n"
+        "|---|---|---|---|\n" + table_rows + "\n"
+    )
+
+
+def _render_nonbasic_lands(
+    land_turn_tallies: dict[int, int],
+    land_turn_game_counts: dict[int, int],
+    land_info: LandInfo,
+    names: CardNames,
+) -> str:
+    _, nonbasic_turns = _split_by_basic(land_turn_tallies, land_info)
+    if not nonbasic_turns:
+        return "_No non-basic lands played yet._\n"
+    nonbasic_counts = {
+        card_id: v for card_id, v in land_turn_game_counts.items() if card_id in nonbasic_turns
+    }
+    turns_by_name = _grouped_by_name(nonbasic_turns, names)
+    counts_by_name = _grouped_by_name(nonbasic_counts, names)
+    rows = sorted(
+        (name, _avg(turn_sum, counts_by_name[name])) for name, turn_sum in turns_by_name.items()
+    )
+    table_rows = "\n".join(f"| {name} | {avg_turn} |" for name, avg_turn in rows)
+    return "| Land | Avg Turn Played |\n|---|---|\n" + table_rows + "\n"
+
+
+def _render_dfc_lands(
+    land_play_tallies: dict[int, int], other_face_cast_tallies: dict[int, int], names: CardNames
+) -> str:
+    """Modal-double-faced-card and adventure lands: how often the other
+    (non-land) side got cast instead of the land side getting played.
+    Omitted entirely for decks with no such lands, same convention as
+    Opponent Commanders below."""
+    if not other_face_cast_tallies:
+        return ""
+    played = _grouped_by_name(
+        {card_id: v for card_id, v in land_play_tallies.items() if card_id in other_face_cast_tallies},
+        names,
+    )
+    cast = _grouped_by_name(other_face_cast_tallies, names)
+    rows = sorted((name, played.get(name, 0), count) for name, count in cast.items())
+    table_rows = "\n".join(
+        f"| {name} | {land_count} | {cast_count} | {_rate(cast_count, land_count + cast_count)} |"
+        for name, land_count, cast_count in rows
+    )
+    heading = (
+        "\n### Modal/Adventure Faces\n\n"
+        "_Lands whose other side (an adventure or a modal double-faced "
+        "card's spell face) can be cast instead of played as a land — how "
+        "often that happened instead._\n\n"
+    )
+    return (
+        heading
+        + "| Land | Played as Land | Cast as Other Side | Other-Side Rate |\n|---|---|---|---|\n"
+        + table_rows
+        + "\n"
+    )
+
+
+def _render_ability_lands(
+    land_ability_tallies: dict[int, int],
+    land_ability_tallies_wins: dict[int, int],
+    names: CardNames,
+    gp_wins: int,
+    gp_losses: int,
+) -> str:
+    """Lands with a non-mana activated ability: how often it got used,
+    split wins/losses. Omitted entirely for decks with no such lands."""
+    if not land_ability_tallies:
+        return ""
+    totals = _grouped_by_name(land_ability_tallies, names)
+    wins = _grouped_by_name(land_ability_tallies_wins, names)
+    rows = sorted((name, wins.get(name, 0), total - wins.get(name, 0)) for name, total in totals.items())
+    table_rows = "\n".join(
+        f"| {name} | {_avg(won, gp_wins)} | {_avg(lost, gp_losses)} |" for name, won, lost in rows
+    )
+    heading = (
+        "\n### Non-Mana Abilities\n\n"
+        "_Lands with an activated ability beyond tapping for mana — how "
+        "often it got used, split by whether we won or lost that game._\n\n"
+    )
+    return heading + "| Land | Activated (Wins) | Activated (Losses) |\n|---|---|---|\n" + table_rows + "\n"
+
+
+def _render_land_use(stats: DeckStats | PeriodStats, names: CardNames, land_info: LandInfo) -> str:
+    gp_losses = stats.gp - stats.gp_wins
+    total_played = sum(stats.land_play_tallies.values())
+    total_played_wins = sum(stats.land_play_tallies_wins.values())
+
+    heading = (
+        "## Land Use\n\n"
+        f"**Lands played per game:** {_avg(total_played, stats.gp)} overall — "
+        f"{_avg(total_played_wins, stats.gp_wins)} in wins — "
+        f"{_avg(total_played - total_played_wins, gp_losses)} in losses\n\n"
+    )
+    basics = (
+        "### Basic Lands\n\n"
+        + _render_basic_lands(
+            stats.land_play_tallies, stats.land_play_tallies_wins, land_info, names, stats.gp, stats.gp_wins
+        )
+        + "\n"
+    )
+    nonbasics = (
+        "### Non-Basic Lands\n\n"
+        + _render_nonbasic_lands(stats.land_turn_tallies, stats.land_turn_game_counts, land_info, names)
+    )
+    dfc = _render_dfc_lands(stats.land_play_tallies, stats.other_face_cast_tallies, names)
+    abilities = _render_ability_lands(
+        stats.land_ability_tallies, stats.land_ability_tallies_wins, names, stats.gp_wins, gp_losses
+    )
+    return heading + basics + nonbasics + dfc + abilities
+
+
 def _render_opponent_commanders(
     tallies: dict[int, OpponentCommanderTally], names: CardNames
 ) -> str:
@@ -164,7 +309,7 @@ def _render_opponent_commanders(
     return "\n" + heading + callout + table
 
 
-def render_card_stats(stats: DeckStats, names: CardNames) -> str:
+def render_card_stats(stats: DeckStats, names: CardNames, land_info: LandInfo) -> str:
     header = (
         f"# {stats.name}\n\n"
         f"- **Deck ID:** `{stats.deck_id}`\n"
@@ -181,6 +326,8 @@ def render_card_stats(stats: DeckStats, names: CardNames) -> str:
         header
         + body
         + "\n"
+        + _render_land_use(stats, names, land_info)
+        + "\n"
         + _render_mulliganed_hands(stats, names)
         + "\n"
         + _render_early_forfeits(stats, names)
@@ -188,7 +335,7 @@ def render_card_stats(stats: DeckStats, names: CardNames) -> str:
     )
 
 
-def render_period_stats(stats: PeriodStats, names: CardNames) -> str:
+def render_period_stats(stats: PeriodStats, names: CardNames, land_info: LandInfo) -> str:
     header = (
         f"# {stats.cadence.title()} — {stats.period_key} — {stats.format_group}\n\n"
         f"- **Games Played:** {_rate(stats.gp_wins, stats.gp)}\n"
@@ -203,6 +350,8 @@ def render_period_stats(stats: PeriodStats, names: CardNames) -> str:
     return (
         header
         + body
+        + "\n"
+        + _render_land_use(stats, names, land_info)
         + "\n"
         + _render_mulliganed_hands(stats, names)
         + "\n"

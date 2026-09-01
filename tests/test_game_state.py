@@ -5,10 +5,13 @@ from __future__ import annotations
 from analysis.game_state import parse_games
 
 from conftest import (
+    gre_diff_activate_ability_line,
+    gre_diff_cast_spell_line,
     gre_diff_draw_line,
     gre_diff_mulligan_count_line,
     gre_diff_mulligan_line,
     gre_diff_move_line,
+    gre_diff_play_land_line,
     gre_diff_turn_line,
     gre_full_line,
 )
@@ -314,3 +317,116 @@ def test_opponent_draw_into_their_own_hand_zone_is_ignored():
     records = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)
 
     assert records[0].drawn == frozenset()
+
+
+BATTLEFIELD_ZONE = 28
+STACK_ZONE = 27
+
+
+def test_land_play_tracked_with_turn_of_first_play():
+    text = (
+        gre_full_line(our_seat_id=OUR_SEAT, hand_zone_id=HAND_ZONE, hand=[(1, 100)])
+        + gre_diff_turn_line(turn_number=3)
+        + gre_diff_play_land_line(
+            instance_id=1, grp_id=100, hand_zone_id=HAND_ZONE,
+            battlefield_zone_id=BATTLEFIELD_ZONE, our_seat_id=OUR_SEAT,
+        )
+    )
+
+    record = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)[0]
+
+    assert record.land_play_counts == {100: 1}
+    assert record.land_first_play_turn == {100: 3}
+
+
+def test_second_play_of_same_land_increments_count_but_keeps_first_turn():
+    # A bounce land or similar returning the same land to hand and back —
+    # the count should grow but the recorded first-play turn should not move.
+    text = (
+        gre_full_line(our_seat_id=OUR_SEAT, hand_zone_id=HAND_ZONE, hand=[(1, 100)])
+        + gre_diff_turn_line(turn_number=2)
+        + gre_diff_play_land_line(
+            instance_id=1, grp_id=100, hand_zone_id=HAND_ZONE,
+            battlefield_zone_id=BATTLEFIELD_ZONE, our_seat_id=OUR_SEAT,
+        )
+        + gre_diff_turn_line(turn_number=6)
+        + gre_diff_play_land_line(
+            instance_id=2, grp_id=100, hand_zone_id=HAND_ZONE,
+            battlefield_zone_id=BATTLEFIELD_ZONE, our_seat_id=OUR_SEAT,
+        )
+    )
+
+    record = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)[0]
+
+    assert record.land_play_counts == {100: 2}
+    assert record.land_first_play_turn == {100: 2}
+
+
+def test_opponent_land_play_is_not_counted():
+    # Symmetric with test_opponent_draw_into_their_own_hand_zone_is_ignored:
+    # the opponent's own land drop leaves THEIR hand zone, not ours.
+    text = gre_full_line(
+        our_seat_id=OUR_SEAT,
+        hand_zone_id=HAND_ZONE,
+        hand=[(1, 100)],
+        opponent_hand_zone_id=31,
+        opponent_hand_instance_ids=[50],
+    ) + gre_diff_play_land_line(
+        instance_id=50, grp_id=999, hand_zone_id=31,
+        battlefield_zone_id=BATTLEFIELD_ZONE, our_seat_id=1,
+    )
+
+    record = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)[0]
+
+    assert record.land_play_counts == {}
+
+
+def test_cast_spell_of_other_face_tracked_separately_from_land_play():
+    # A modal-double-faced/adventure land's other face is a distinct grpId,
+    # cast rather than played — must not be folded into land_play_counts.
+    text = (
+        gre_full_line(our_seat_id=OUR_SEAT, hand_zone_id=HAND_ZONE, hand=[(1, 200)])
+        + gre_diff_cast_spell_line(
+            instance_id=1, grp_id=200, hand_zone_id=HAND_ZONE,
+            stack_zone_id=STACK_ZONE, our_seat_id=OUR_SEAT,
+        )
+    )
+
+    record = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)[0]
+
+    assert record.cast_grp_ids == {200: 1}
+    assert record.land_play_counts == {}
+
+
+def test_ability_activation_attributed_to_its_source_land():
+    text = (
+        gre_full_line(
+            our_seat_id=OUR_SEAT, hand_zone_id=HAND_ZONE, hand=[(1, 100)],
+        )
+        + gre_diff_play_land_line(
+            instance_id=1, grp_id=100, hand_zone_id=HAND_ZONE,
+            battlefield_zone_id=BATTLEFIELD_ZONE, our_seat_id=OUR_SEAT,
+        )
+        + gre_diff_activate_ability_line(
+            source_instance_id=1, ability_instance_id=900, ability_id=50001,
+            acting_seat_id=OUR_SEAT,
+        )
+    )
+
+    record = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)[0]
+
+    assert record.ability_activation_counts == {(100, 50001): 1}
+
+
+def test_opponent_ability_activation_is_not_counted():
+    text = (
+        gre_full_line(our_seat_id=OUR_SEAT, hand_zone_id=HAND_ZONE, hand=[(1, 100)])
+        + gre_diff_activate_ability_line(
+            source_instance_id=77, ability_instance_id=900, ability_id=50001,
+            acting_seat_id=3 - OUR_SEAT,
+        )
+    )
+
+    record = parse_games(text, match_id="match-1", our_seat_id=OUR_SEAT)[0]
+
+    assert record.ability_activation_counts == {}

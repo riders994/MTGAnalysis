@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import gzip
-import sqlite3
 from pathlib import Path
 
 from analysis import bracket_stats
@@ -16,6 +15,7 @@ from conftest import (
     gre_full_line,
     match_room_state_completed_line,
     match_room_state_playing_line,
+    write_carddb_snapshot,
 )
 
 OUR_SEAT = 1
@@ -37,30 +37,6 @@ def _write_session(cfg, session_id: str, text: str, *, suffix: str = "aaaaaaaa")
     dest = cfg.sessions_dir / f"session-{session_id}-{suffix}.log.gz"
     dest.write_bytes(gzip.compress(text.encode("utf-8")))
     return dest
-
-
-def _write_carddb_snapshot(cfg, tmp_path: Path, cards: dict[int, str]) -> None:
-    carddb_dir = cfg.snapshots_dir / "carddb"
-    carddb_dir.mkdir(parents=True, exist_ok=True)
-
-    db_path = tmp_path / "carddb.sqlite"
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.execute("CREATE TABLE Cards (GrpId INTEGER PRIMARY KEY, TitleId INTEGER)")
-        conn.execute("CREATE TABLE Localizations_enUS (LocId INTEGER PRIMARY KEY, Loc TEXT)")
-        for grp_id, name in cards.items():
-            title_id = grp_id + 1000
-            conn.execute("INSERT INTO Cards (GrpId, TitleId) VALUES (?, ?)", (grp_id, title_id))
-            conn.execute(
-                "INSERT INTO Localizations_enUS (LocId, Loc) VALUES (?, ?)", (title_id, name)
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
-    dest = carddb_dir / "Raw_CardDatabase_test.gz"
-    with open(db_path, "rb") as src, gzip.open(dest, "wb") as out:
-        out.write(src.read())
 
 
 def _match_text(
@@ -170,7 +146,7 @@ def test_aggregate_opponent_commanders_merges_across_decks():
 
 
 def test_collect_bracket_stats_segments_ranked_casual_and_excludes_non_brawl(cfg, tmp_path):
-    _write_carddb_snapshot(cfg, tmp_path, {ISLAND: "Island", C1: "Our Commander", TERGRID: "Tergrid, God of Fright"})
+    write_carddb_snapshot(cfg, tmp_path, {ISLAND: "Island", C1: "Our Commander", TERGRID: "Tergrid, God of Fright"})
 
     text = (
         deck_upsert_line(
@@ -202,7 +178,7 @@ def test_collect_bracket_stats_segments_ranked_casual_and_excludes_non_brawl(cfg
 
 
 def test_run_writes_overview_with_limitations_and_tables(cfg, tmp_path):
-    _write_carddb_snapshot(
+    write_carddb_snapshot(
         cfg, tmp_path,
         {ISLAND: "Island", C1: "Our Commander", TERGRID: "Tergrid, God of Fright"},
     )
@@ -225,7 +201,7 @@ def test_run_writes_overview_with_limitations_and_tables(cfg, tmp_path):
 
 
 def test_reference_tier_annotation_and_krenko_naming_collision(cfg, tmp_path):
-    _write_carddb_snapshot(
+    write_carddb_snapshot(
         cfg, tmp_path,
         {
             ISLAND: "Island", C1: "Our Commander",
@@ -257,7 +233,7 @@ def test_reference_tier_annotation_and_krenko_naming_collision(cfg, tmp_path):
 
 
 def test_reference_check_matches_expectation(cfg, tmp_path):
-    _write_carddb_snapshot(
+    write_carddb_snapshot(
         cfg, tmp_path,
         {
             ISLAND: "Island", C1: "Our Commander",
@@ -284,7 +260,7 @@ def test_reference_check_matches_expectation(cfg, tmp_path):
 
 
 def test_reference_check_reports_insufficient_data_with_one_tier_only(cfg, tmp_path):
-    _write_carddb_snapshot(
+    write_carddb_snapshot(
         cfg, tmp_path,
         {ISLAND: "Island", C1: "Our Commander", GENERIC_OPPONENT: "Some Rando Commander"},
     )
@@ -303,7 +279,7 @@ def test_reference_check_reports_insufficient_data_with_one_tier_only(cfg, tmp_p
 
 
 def test_overlap_between_piloted_and_faced_commander_is_noted(cfg, tmp_path):
-    _write_carddb_snapshot(
+    write_carddb_snapshot(
         cfg, tmp_path,
         {ISLAND: "Island", C1: "Our Commander", TERGRID: "Tergrid, God of Fright"},
     )
@@ -328,7 +304,7 @@ def test_overlap_between_piloted_and_faced_commander_is_noted(cfg, tmp_path):
 
 
 def test_deck_trend_rising_and_insufficient_data_render(cfg, tmp_path):
-    _write_carddb_snapshot(
+    write_carddb_snapshot(
         cfg, tmp_path, {ISLAND: "Island", C1: "Our Commander", GENERIC_OPPONENT: "Some Rando Commander"},
     )
     matches = "".join(
@@ -359,7 +335,7 @@ def test_deck_trend_rising_and_insufficient_data_render(cfg, tmp_path):
 
 
 def test_run_produces_nothing_for_archive_with_no_brawl_data(cfg, tmp_path):
-    _write_carddb_snapshot(cfg, tmp_path, {ISLAND: "Island"})
+    write_carddb_snapshot(cfg, tmp_path, {ISLAND: "Island"})
     text = (
         deck_upsert_line("deck-c", "Deck C", format="Standard", main_deck=[(ISLAND, 1)])
         + event_set_deck_response_line("c1", "deck-c", "deck-c")
@@ -390,7 +366,7 @@ def test_run_surfaces_missing_carddb_as_warning(cfg):
 
 
 def test_ranked_segment_reports_no_data_yet_when_only_casual_played(cfg, tmp_path):
-    _write_carddb_snapshot(cfg, tmp_path, {ISLAND: "Island", C1: "Our Commander", TERGRID: "Tergrid, God of Fright"})
+    write_carddb_snapshot(cfg, tmp_path, {ISLAND: "Island", C1: "Our Commander", TERGRID: "Tergrid, God of Fright"})
     text = (
         deck_upsert_line(
             "deck-a", "Deck A", format="HistoricBrawl", main_deck=[(ISLAND, 1)], command_zone=[(C1, 1)],

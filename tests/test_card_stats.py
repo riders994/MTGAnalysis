@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import gzip
-import sqlite3
 from pathlib import Path
 
 from analysis import card_stats
@@ -11,12 +10,16 @@ from analysis import card_stats
 from conftest import (
     deck_upsert_line,
     event_set_deck_response_line,
+    gre_diff_activate_ability_line,
+    gre_diff_cast_spell_line,
     gre_diff_draw_line,
     gre_diff_mulligan_line,
+    gre_diff_play_land_line,
     gre_diff_turn_line,
     gre_full_line,
     match_room_state_completed_line,
     match_room_state_playing_line,
+    write_carddb_snapshot,
 )
 
 OUR_SEAT = 1
@@ -32,30 +35,6 @@ def _write_session(cfg, session_id: str, text: str, *, suffix: str = "aaaaaaaa")
     return dest
 
 
-def _write_carddb_snapshot(cfg, tmp_path: Path, cards: dict[int, str]) -> None:
-    carddb_dir = cfg.snapshots_dir / "carddb"
-    carddb_dir.mkdir(parents=True, exist_ok=True)
-
-    db_path = tmp_path / "carddb.sqlite"
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.execute("CREATE TABLE Cards (GrpId INTEGER PRIMARY KEY, TitleId INTEGER)")
-        conn.execute("CREATE TABLE Localizations_enUS (LocId INTEGER PRIMARY KEY, Loc TEXT)")
-        for grp_id, name in cards.items():
-            title_id = grp_id + 1000
-            conn.execute("INSERT INTO Cards (GrpId, TitleId) VALUES (?, ?)", (grp_id, title_id))
-            conn.execute(
-                "INSERT INTO Localizations_enUS (LocId, Loc) VALUES (?, ?)", (title_id, name)
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
-    dest = carddb_dir / "Raw_CardDatabase_test.gz"
-    with open(db_path, "rb") as src, gzip.open(dest, "wb") as out:
-        out.write(src.read())
-
-
 def _match_session_text(deck_id, name, *, course_id, match_id, winning_team_id, format="HistoricBrawl"):
     return (
         deck_upsert_line(deck_id, name, version="1", format=format, main_deck=[(75022, 1)])
@@ -68,7 +47,7 @@ def _match_session_text(deck_id, name, *, course_id, match_id, winning_team_id, 
 
 
 def test_won_match_reported_with_no_per_card_data_yet(cfg, tmp_path):
-    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
+    write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
     text = _match_session_text(
         "deck-abc", "Lagaan", course_id="course-1", match_id="match-1", winning_team_id=1
     )
@@ -91,7 +70,7 @@ def test_won_match_reported_with_no_per_card_data_yet(cfg, tmp_path):
 
 
 def test_lost_match_win_rate_is_zero(cfg, tmp_path):
-    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
+    write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
     text = _match_session_text(
         "deck-abc", "Lagaan", course_id="course-1", match_id="match-1", winning_team_id=2
     )
@@ -104,7 +83,7 @@ def test_lost_match_win_rate_is_zero(cfg, tmp_path):
 
 
 def test_match_bound_to_unknown_deck_warns_and_is_skipped(cfg, tmp_path):
-    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
+    write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
     # A match/queue sequence with no corresponding DeckUpsertDeckV3 save.
     text = (
         event_set_deck_response_line("course-1", "deck-unknown", "Mystery Deck")
@@ -128,7 +107,7 @@ def test_match_bound_to_unknown_deck_warns_and_is_skipped(cfg, tmp_path):
 def test_per_card_stats_from_gre_traffic(cfg, tmp_path):
     """Checkpoint B: GRE traffic between Playing and MatchCompleted feeds
     real OH/GD/GNS bucketing, not just GP/GP WR."""
-    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island", 75021: "Plains", 96080: "Sol Ring"})
+    write_carddb_snapshot(cfg, tmp_path, {75022: "Island", 75021: "Plains", 96080: "Sol Ring"})
 
     text = (
         deck_upsert_line(
@@ -168,7 +147,7 @@ def test_basic_land_art_variants_merge_by_name_snow_stays_separate(cfg, tmp_path
     keyed by the raw grpId, but the rendered report must merge those variants
     into one row — while Snow-Covered Plains, a genuinely different card,
     stays on its own row."""
-    _write_carddb_snapshot(
+    write_carddb_snapshot(
         cfg, tmp_path,
         {75021: "Plains", 75023: "Plains", 75024: "Snow-Covered Plains", 96080: "Sol Ring"},
     )
@@ -212,7 +191,7 @@ def test_mulliganed_hand_tallied_and_rendered(cfg, tmp_path):
     """Cards sent back on a mulligan are tallied per-card, distinct from
     the deck-level Mulligan Rate — and from OH, which only covers the hand
     we kept."""
-    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island", 75021: "Plains", 96080: "Sol Ring"})
+    write_carddb_snapshot(cfg, tmp_path, {75022: "Island", 75021: "Plains", 96080: "Sol Ring"})
 
     text = (
         deck_upsert_line(
@@ -258,7 +237,7 @@ def test_mulliganed_hand_tallied_and_rendered(cfg, tmp_path):
 
 
 def test_opponent_commander_tallied_and_rendered_for_brawl_deck(cfg, tmp_path):
-    _write_carddb_snapshot(
+    write_carddb_snapshot(
         cfg, tmp_path, {75022: "Island", 96080: "Sol Ring", 90302: "Krenko, Tin Street Kingpin"}
     )
 
@@ -298,7 +277,7 @@ def test_opponent_commander_tallied_and_rendered_for_brawl_deck(cfg, tmp_path):
 
 
 def test_opponent_commander_early_concede_uses_turn_6_not_turn_4_cutoff(cfg, tmp_path):
-    _write_carddb_snapshot(
+    write_carddb_snapshot(
         cfg, tmp_path, {75022: "Island", 96080: "Sol Ring", 90302: "Krenko, Tin Street Kingpin"}
     )
 
@@ -342,7 +321,7 @@ def test_opponent_commander_early_concede_uses_turn_6_not_turn_4_cutoff(cfg, tmp
 
 
 def test_non_brawl_deck_report_omits_opponent_commanders_section(cfg, tmp_path):
-    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
+    write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
     text = _match_session_text(
         "deck-abc", "Lagaan", course_id="course-1", match_id="match-1", winning_team_id=1,
         format="Standard",
@@ -356,7 +335,7 @@ def test_non_brawl_deck_report_omits_opponent_commanders_section(cfg, tmp_path):
 
 
 def test_own_commander_grp_ids_populated_from_command_zone(cfg, tmp_path):
-    _write_carddb_snapshot(
+    write_carddb_snapshot(
         cfg, tmp_path, {75022: "Island", 90302: "Krenko, Tin Street Kingpin"}
     )
     text = deck_upsert_line(
@@ -371,7 +350,7 @@ def test_own_commander_grp_ids_populated_from_command_zone(cfg, tmp_path):
 
 
 def test_own_commander_grp_ids_empty_for_non_brawl_deck(cfg, tmp_path):
-    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
+    write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
     text = deck_upsert_line(
         "deck-abc", "Lagaan", version="1", format="Standard", main_deck=[(75022, 1)],
     )
@@ -383,7 +362,7 @@ def test_own_commander_grp_ids_empty_for_non_brawl_deck(cfg, tmp_path):
 
 
 def test_own_commander_grp_ids_includes_both_partner_commanders(cfg, tmp_path):
-    _write_carddb_snapshot(
+    write_carddb_snapshot(
         cfg, tmp_path, {75022: "Island", 90302: "Krenko, Tin Street Kingpin", 96080: "Sol Ring"}
     )
     text = deck_upsert_line(
@@ -400,7 +379,7 @@ def test_own_commander_grp_ids_includes_both_partner_commanders(cfg, tmp_path):
 def test_deck_reissued_under_same_name_keeps_all_time_stats_continuous(cfg, tmp_path):
     """Delete+recreate under the same name gets a new deck_id from Arena —
     the all-time report must keep counting across that boundary, not reset."""
-    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
+    write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
     first_match = _match_session_text(
         "deck-one", "Foo", course_id="course-1", match_id="match-1", winning_team_id=1
     )
@@ -421,6 +400,189 @@ def test_deck_reissued_under_same_name_keeps_all_time_stats_continuous(cfg, tmp_
     assert full_summary.decks_written == ["foo.md"]
     content = (cfg.archive_dir / "reports" / "card_stats" / "foo.md").read_text()
     assert "50% (1/2)" in content  # Games Played line
+
+
+def test_land_use_section_reports_basics_split_wins_and_losses(cfg, tmp_path):
+    PLAINS = 91301
+    write_carddb_snapshot(
+        cfg, tmp_path, {PLAINS: "Plains"}, lands={PLAINS: {"types": "5", "supertypes": "1"}}
+    )
+    deck_save = deck_upsert_line(
+        "deck-abc", "Lagaan", version="1", main_deck=[(PLAINS, 3)]
+    ) + event_set_deck_response_line("course-1", "deck-abc", "Lagaan")
+
+    win_game = (
+        deck_save
+        + match_room_state_playing_line("match-1", [(OUR_ID, 1, 1), (OPPONENT_ID, 2, 2)], our_id=OUR_ID)
+        + gre_full_line(our_seat_id=1, hand_zone_id=35, hand=[(1, PLAINS)])
+        + gre_diff_play_land_line(
+            instance_id=1, grp_id=PLAINS, hand_zone_id=35, battlefield_zone_id=28, our_seat_id=1
+        )
+        + gre_diff_draw_line(drawn_instance_id=2, drawn_grp_id=PLAINS, hand_zone_id=35, our_seat_id=1)
+        + gre_diff_play_land_line(
+            instance_id=2, grp_id=PLAINS, hand_zone_id=35, battlefield_zone_id=28, our_seat_id=1
+        )
+        + match_room_state_completed_line("match-1", winning_team_id=1, our_id=OUR_ID)
+    )
+    _write_session(cfg, "20260817T100000", win_game, suffix="aaaaaaaa")
+
+    loss_game = (
+        deck_save
+        + match_room_state_playing_line("match-2", [(OUR_ID, 1, 1), (OPPONENT_ID, 2, 2)], our_id=OUR_ID)
+        + gre_full_line(our_seat_id=1, hand_zone_id=35, hand=[(3, PLAINS)])
+        + gre_diff_play_land_line(
+            instance_id=3, grp_id=PLAINS, hand_zone_id=35, battlefield_zone_id=28, our_seat_id=1
+        )
+        + match_room_state_completed_line("match-2", winning_team_id=2, our_id=OUR_ID)
+    )
+    _write_session(cfg, "20260817T110000", loss_game, suffix="bbbbbbbb")
+
+    full_summary = card_stats.run(cfg)
+    content = (cfg.archive_dir / "reports" / "card_stats" / "lagaan.md").read_text()
+
+    assert full_summary.decks_written == ["lagaan.md"]
+    assert "## Land Use" in content
+    assert (
+        "**Lands played per game:** 1.50 (3/2) overall — 2.00 (2/1) in wins — 1.00 (1/1) in losses"
+        in content
+    )
+    assert "### Basic Lands" in content
+    assert "| Plains | 1.50 (3/2) | 2.00 (2/1) | 1.00 (1/1) |" in content
+
+
+def test_land_use_section_reports_nonbasic_avg_turn_played(cfg, tmp_path):
+    OVERGROWN_TOMB = 68734
+    write_carddb_snapshot(
+        cfg, tmp_path, {OVERGROWN_TOMB: "Overgrown Tomb"}, lands={OVERGROWN_TOMB: {"types": "5"}}
+    )
+    deck_save = deck_upsert_line(
+        "deck-abc", "Lagaan", version="1", main_deck=[(OVERGROWN_TOMB, 1)]
+    ) + event_set_deck_response_line("course-1", "deck-abc", "Lagaan")
+
+    game1 = (
+        deck_save
+        + match_room_state_playing_line("match-1", [(OUR_ID, 1, 1), (OPPONENT_ID, 2, 2)], our_id=OUR_ID)
+        + gre_full_line(our_seat_id=1, hand_zone_id=35, hand=[(1, OVERGROWN_TOMB)])
+        + gre_diff_turn_line(turn_number=2)
+        + gre_diff_play_land_line(
+            instance_id=1, grp_id=OVERGROWN_TOMB, hand_zone_id=35, battlefield_zone_id=28, our_seat_id=1
+        )
+        + match_room_state_completed_line("match-1", winning_team_id=1, our_id=OUR_ID)
+    )
+    _write_session(cfg, "20260817T100000", game1, suffix="aaaaaaaa")
+
+    game2 = (
+        deck_save
+        + match_room_state_playing_line("match-2", [(OUR_ID, 1, 1), (OPPONENT_ID, 2, 2)], our_id=OUR_ID)
+        + gre_full_line(our_seat_id=1, hand_zone_id=35, hand=[(1, OVERGROWN_TOMB)])
+        + gre_diff_turn_line(turn_number=4)
+        + gre_diff_play_land_line(
+            instance_id=1, grp_id=OVERGROWN_TOMB, hand_zone_id=35, battlefield_zone_id=28, our_seat_id=1
+        )
+        + match_room_state_completed_line("match-2", winning_team_id=2, our_id=OUR_ID)
+    )
+    _write_session(cfg, "20260817T110000", game2, suffix="bbbbbbbb")
+
+    card_stats.run(cfg)
+    content = (cfg.archive_dir / "reports" / "card_stats" / "lagaan.md").read_text()
+
+    assert "### Non-Basic Lands" in content
+    assert "| Overgrown Tomb | 3.00 (6/2) |" in content
+
+
+def test_land_use_section_reports_dfc_other_side_cast_rate(cfg, tmp_path):
+    JIDOOR, OVERTURE = 96164, 96165
+    write_carddb_snapshot(
+        cfg,
+        tmp_path,
+        {JIDOOR: "Jidoor, Aristocratic Capital", OVERTURE: "Overture"},
+        lands={JIDOOR: {"types": "5", "linked_face_grp_ids": str(OVERTURE)}},
+    )
+    deck_save = deck_upsert_line(
+        "deck-abc", "Lagaan", version="1", main_deck=[(JIDOOR, 1)]
+    ) + event_set_deck_response_line("course-1", "deck-abc", "Lagaan")
+
+    played_as_land = (
+        deck_save
+        + match_room_state_playing_line("match-1", [(OUR_ID, 1, 1), (OPPONENT_ID, 2, 2)], our_id=OUR_ID)
+        + gre_full_line(our_seat_id=1, hand_zone_id=35, hand=[(1, JIDOOR)])
+        + gre_diff_play_land_line(
+            instance_id=1, grp_id=JIDOOR, hand_zone_id=35, battlefield_zone_id=28, our_seat_id=1
+        )
+        + match_room_state_completed_line("match-1", winning_team_id=1, our_id=OUR_ID)
+    )
+    _write_session(cfg, "20260817T100000", played_as_land, suffix="aaaaaaaa")
+
+    cast_as_spell = (
+        deck_save
+        + match_room_state_playing_line("match-2", [(OUR_ID, 1, 1), (OPPONENT_ID, 2, 2)], our_id=OUR_ID)
+        + gre_full_line(our_seat_id=1, hand_zone_id=35, hand=[(2, OVERTURE)])
+        + gre_diff_cast_spell_line(
+            instance_id=2, grp_id=OVERTURE, hand_zone_id=35, stack_zone_id=27, our_seat_id=1
+        )
+        + match_room_state_completed_line("match-2", winning_team_id=2, our_id=OUR_ID)
+    )
+    _write_session(cfg, "20260817T110000", cast_as_spell, suffix="bbbbbbbb")
+
+    card_stats.run(cfg)
+    content = (cfg.archive_dir / "reports" / "card_stats" / "lagaan.md").read_text()
+
+    assert "### Modal/Adventure Faces" in content
+    assert "| Jidoor, Aristocratic Capital | 1 | 1 | 50% (1/2) |" in content
+
+
+def test_land_use_section_reports_non_mana_ability_activation_split_wins_and_losses(cfg, tmp_path):
+    CASTLE_VANTRESS = 70389
+    MANA_ABILITY, SCRY_ABILITY = 1002, 50001
+    write_carddb_snapshot(
+        cfg,
+        tmp_path,
+        {CASTLE_VANTRESS: "Castle Vantress"},
+        lands={CASTLE_VANTRESS: {"types": "5", "ability_ids": f"{MANA_ABILITY}:0,{SCRY_ABILITY}:0"}},
+        abilities={MANA_ABILITY: (1, 1), SCRY_ABILITY: (1, 15)},
+    )
+    deck_save = deck_upsert_line(
+        "deck-abc", "Lagaan", version="1", main_deck=[(CASTLE_VANTRESS, 1)]
+    ) + event_set_deck_response_line("course-1", "deck-abc", "Lagaan")
+
+    win_game = (
+        deck_save
+        + match_room_state_playing_line("match-1", [(OUR_ID, 1, 1), (OPPONENT_ID, 2, 2)], our_id=OUR_ID)
+        + gre_full_line(our_seat_id=1, hand_zone_id=35, hand=[(1, CASTLE_VANTRESS)])
+        + gre_diff_play_land_line(
+            instance_id=1, grp_id=CASTLE_VANTRESS, hand_zone_id=35, battlefield_zone_id=28, our_seat_id=1
+        )
+        # A non-mana ability activation (tracked) and a mana ability
+        # activation (excluded) in the same game.
+        + gre_diff_activate_ability_line(
+            source_instance_id=1, ability_instance_id=900, ability_id=SCRY_ABILITY, acting_seat_id=1
+        )
+        + gre_diff_activate_ability_line(
+            source_instance_id=1, ability_instance_id=901, ability_id=MANA_ABILITY, acting_seat_id=1
+        )
+        + match_room_state_completed_line("match-1", winning_team_id=1, our_id=OUR_ID)
+    )
+    _write_session(cfg, "20260817T100000", win_game, suffix="aaaaaaaa")
+
+    loss_game = (
+        deck_save
+        + match_room_state_playing_line("match-2", [(OUR_ID, 1, 1), (OPPONENT_ID, 2, 2)], our_id=OUR_ID)
+        + gre_full_line(our_seat_id=1, hand_zone_id=35, hand=[(1, CASTLE_VANTRESS)])
+        + gre_diff_play_land_line(
+            instance_id=1, grp_id=CASTLE_VANTRESS, hand_zone_id=35, battlefield_zone_id=28, our_seat_id=1
+        )
+        + gre_diff_activate_ability_line(
+            source_instance_id=1, ability_instance_id=902, ability_id=SCRY_ABILITY, acting_seat_id=1
+        )
+        + match_room_state_completed_line("match-2", winning_team_id=2, our_id=OUR_ID)
+    )
+    _write_session(cfg, "20260817T110000", loss_game, suffix="bbbbbbbb")
+
+    card_stats.run(cfg)
+    content = (cfg.archive_dir / "reports" / "card_stats" / "lagaan.md").read_text()
+
+    assert "### Non-Mana Abilities" in content
+    assert "| Castle Vantress | 1.00 (1/1) | 1.00 (1/1) |" in content
 
 
 def test_missing_carddb_surfaces_as_warning_not_exception(cfg):

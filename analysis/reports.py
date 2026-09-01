@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 
 from collector.config import Config
 
-from .carddb import CardDbUnavailable, load_card_names
+from .carddb import CardDbUnavailable, LandInfo, load_card_names, load_land_info
 from .card_stats import (
     CardTally,
     DeckStats,
@@ -55,6 +55,13 @@ class PeriodStats:
     early_forfeit_hand_tallies: dict[int, int] = field(default_factory=dict)
     card_tallies: dict[int, CardTally] = field(default_factory=dict)
     opponent_commander_tallies: dict[int, OpponentCommanderTally] = field(default_factory=dict)
+    land_play_tallies: dict[int, int] = field(default_factory=dict)
+    land_play_tallies_wins: dict[int, int] = field(default_factory=dict)
+    land_turn_tallies: dict[int, int] = field(default_factory=dict)
+    land_turn_game_counts: dict[int, int] = field(default_factory=dict)
+    other_face_cast_tallies: dict[int, int] = field(default_factory=dict)
+    land_ability_tallies: dict[int, int] = field(default_factory=dict)
+    land_ability_tallies_wins: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -89,6 +96,10 @@ def collect_period_stats(
     raw_by_deck_saves, _ = collect_saves(cfg)
     by_deck_saves, deck_id_to_canonical = merge_saves_by_identity(raw_by_deck_saves)
     seasons = load_seasons()
+    try:
+        land_info = load_land_info(cfg)
+    except CardDbUnavailable:
+        land_info = LandInfo.empty()
     summary = Summary()
 
     deck_format: dict[str, str | None] = {}
@@ -140,8 +151,8 @@ def collect_period_stats(
                 deck_stats.gp_wins += 1
 
             for game in games:
-                fold_game(summary_stats, game, outcome, decklist_ids[canonical])
-                fold_game(deck_stats, game, outcome, decklist_ids[canonical])
+                fold_game(summary_stats, game, outcome, decklist_ids[canonical], land_info)
+                fold_game(deck_stats, game, outcome, decklist_ids[canonical], land_info)
 
         summary.games_parsed += len(games)
 
@@ -157,6 +168,7 @@ def run(cfg: Config) -> Summary:
 
     try:
         names = load_card_names(cfg)
+        land_info = load_land_info(cfg)
     except CardDbUnavailable as exc:
         summary.warnings.append(str(exc))
         return summary
@@ -167,7 +179,7 @@ def run(cfg: Config) -> Summary:
         dest_dir = reports_dir / cadence / "summary"
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / f"{slugify(period_key)}-{slugify(group)}.md"
-        dest.write_text(render_period_stats(stats, names), encoding="utf-8")
+        dest.write_text(render_period_stats(stats, names, land_info), encoding="utf-8")
         summary.summaries_written.append(f"{cadence}/summary/{dest.name}")
 
     # Slug collisions between two decks sharing a period are resolved per
@@ -186,7 +198,7 @@ def run(cfg: Config) -> Summary:
         for canonical, slug in slugs.items():
             stats = deck_reports[(cadence, period_key, canonical)]
             dest = dest_dir / f"{slugify(period_key)}-{slug}.md"
-            dest.write_text(render_card_stats(stats, names), encoding="utf-8")
+            dest.write_text(render_card_stats(stats, names, land_info), encoding="utf-8")
             summary.decks_written.append(f"{cadence}/decks/{dest.name}")
 
     return summary

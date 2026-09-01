@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import gzip
-import sqlite3
 import textwrap
 from datetime import date
 from pathlib import Path
@@ -14,9 +13,11 @@ from analysis.seasons import Season
 from conftest import (
     deck_upsert_line,
     event_set_deck_response_line,
+    gre_diff_play_land_line,
     gre_full_line,
     match_room_state_completed_line,
     match_room_state_playing_line,
+    write_carddb_snapshot,
 )
 
 OUR_ID = "OURCLIENTID"
@@ -29,30 +30,6 @@ def _write_session(cfg, session_id: str, text: str, *, suffix: str = "aaaaaaaa")
     dest = cfg.sessions_dir / f"session-{session_id}-{suffix}.log.gz"
     dest.write_bytes(gzip.compress(text.encode("utf-8")))
     return dest
-
-
-def _write_carddb_snapshot(cfg, tmp_path: Path, cards: dict[int, str]) -> None:
-    carddb_dir = cfg.snapshots_dir / "carddb"
-    carddb_dir.mkdir(parents=True, exist_ok=True)
-
-    db_path = tmp_path / "carddb.sqlite"
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.execute("CREATE TABLE Cards (GrpId INTEGER PRIMARY KEY, TitleId INTEGER)")
-        conn.execute("CREATE TABLE Localizations_enUS (LocId INTEGER PRIMARY KEY, Loc TEXT)")
-        for grp_id, name in cards.items():
-            title_id = grp_id + 1000
-            conn.execute("INSERT INTO Cards (GrpId, TitleId) VALUES (?, ?)", (grp_id, title_id))
-            conn.execute(
-                "INSERT INTO Localizations_enUS (LocId, Loc) VALUES (?, ?)", (title_id, name)
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
-    dest = carddb_dir / "Raw_CardDatabase_test.gz"
-    with open(db_path, "rb") as src, gzip.open(dest, "wb") as out:
-        out.write(src.read())
 
 
 def _match_session_text(deck_id, name, *, course_id, match_id, winning_team_id, format):
@@ -76,7 +53,7 @@ def test_annual_splits_by_format_group_monthly_excludes_limited(cfg, tmp_path, m
     """A Standard match and a HistoricBrawl match in the same month: annual
     produces two format summaries; monthly (Brawl/Standard/Alchemy only)
     also splits them into two summaries here since both groups qualify."""
-    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
+    write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
     monkeypatch.setattr(reports, "load_seasons", lambda: [])
 
     text = _match_session_text(
@@ -102,7 +79,7 @@ def test_annual_splits_by_format_group_monthly_excludes_limited(cfg, tmp_path, m
 
 
 def test_limited_format_only_counts_toward_annual_and_seasonal_not_monthly(cfg, tmp_path, monkeypatch):
-    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
+    write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
     monkeypatch.setattr(reports, "load_seasons", lambda: [Season("Test Season", date(2026, 1, 1))])
 
     text = _match_session_text(
@@ -120,7 +97,7 @@ def test_limited_format_only_counts_toward_annual_and_seasonal_not_monthly(cfg, 
 
 def test_match_before_earliest_season_excluded_from_seasonal_only(cfg, tmp_path, monkeypatch):
     monkeypatch.setattr(reports, "load_seasons", lambda: [Season("Later Season", date(2027, 1, 1))])
-    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
+    write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
 
     text = _match_session_text(
         "deck-std", "Riddles", course_id="c1", match_id="m1", winning_team_id=1, format="Standard"
@@ -136,7 +113,7 @@ def test_match_before_earliest_season_excluded_from_seasonal_only(cfg, tmp_path,
 
 def test_per_deck_period_gp_matches_summary_gp_when_one_deck_per_group(cfg, tmp_path, monkeypatch):
     monkeypatch.setattr(reports, "load_seasons", lambda: [])
-    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
+    write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
 
     text = _match_session_text(
         "deck-brawl", "Welshie", course_id="c1", match_id="m1", winning_team_id=1, format="HistoricBrawl"
@@ -153,7 +130,7 @@ def test_per_deck_period_gp_matches_summary_gp_when_one_deck_per_group(cfg, tmp_
 
 def test_run_writes_summary_and_deck_files_under_reports_dir(cfg, tmp_path, monkeypatch):
     monkeypatch.setattr(reports, "load_seasons", lambda: [])
-    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
+    write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
 
     text = _match_session_text(
         "deck-brawl", "Welshie", course_id="c1", match_id="m1", winning_team_id=1, format="HistoricBrawl"
@@ -177,7 +154,7 @@ def test_run_writes_summary_and_deck_files_under_reports_dir(cfg, tmp_path, monk
 
 def test_deck_never_seen_via_deck_upsert_warns_and_is_skipped(cfg, tmp_path, monkeypatch):
     monkeypatch.setattr(reports, "load_seasons", lambda: [])
-    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
+    write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
 
     text = (
         event_set_deck_response_line("c1", "deck-unknown", "Mystery Deck")
@@ -196,7 +173,7 @@ def test_deck_never_seen_via_deck_upsert_warns_and_is_skipped(cfg, tmp_path, mon
 
 def test_opponent_commanders_rolled_up_into_brawl_summary_and_deck_reports(cfg, tmp_path, monkeypatch):
     monkeypatch.setattr(reports, "load_seasons", lambda: [])
-    _write_carddb_snapshot(
+    write_carddb_snapshot(
         cfg, tmp_path, {75022: "Island", 96080: "Sol Ring", 90302: "Krenko, Tin Street Kingpin"}
     )
 
@@ -239,7 +216,7 @@ def test_deck_reissued_under_same_name_merges_into_one_period_report(cfg, tmp_pa
     the periodic per-deck report must fold both matches into one deck, not
     write two separate reports for the same period."""
     monkeypatch.setattr(reports, "load_seasons", lambda: [])
-    _write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
+    write_carddb_snapshot(cfg, tmp_path, {75022: "Island"})
 
     first_match = _match_session_text(
         "deck-one", "Welshie", course_id="c1", match_id="m1", winning_team_id=1, format="HistoricBrawl"
@@ -257,6 +234,38 @@ def test_deck_reissued_under_same_name_merges_into_one_period_report(cfg, tmp_pa
     deck_keys = [key for key in deck_reports if key[:2] == ("annual", "2026")]
     assert deck_keys == [("annual", "2026", "Welshie")]
     assert deck_reports[("annual", "2026", "Welshie")].gp == 2
+
+
+def test_land_use_section_renders_in_both_summary_and_deck_period_reports(cfg, tmp_path, monkeypatch):
+    monkeypatch.setattr(reports, "load_seasons", lambda: [])
+    PLAINS = 91301
+    write_carddb_snapshot(
+        cfg, tmp_path, {PLAINS: "Plains"}, lands={PLAINS: {"types": "5", "supertypes": "1"}}
+    )
+
+    text = (
+        deck_upsert_line(
+            "deck-brawl", "Welshie", version="1", format="HistoricBrawl", main_deck=[(PLAINS, 1)]
+        )
+        + event_set_deck_response_line("c1", "deck-brawl", "Welshie")
+        + match_room_state_playing_line("m1", [(OUR_ID, 1, 1), (OPPONENT_ID, 2, 2)], our_id=OUR_ID)
+        + gre_full_line(our_seat_id=1, hand_zone_id=35, hand=[(1, PLAINS)])
+        + gre_diff_play_land_line(
+            instance_id=1, grp_id=PLAINS, hand_zone_id=35, battlefield_zone_id=28, our_seat_id=1
+        )
+        + match_room_state_completed_line("m1", winning_team_id=1, our_id=OUR_ID)
+    )
+    _write_session(cfg, "20260817T100000", text)
+
+    summary = reports.run(cfg)
+
+    summary_content = (cfg.archive_dir / "reports" / "annual" / "summary" / "2026-brawl.md").read_text()
+    assert "## Land Use" in summary_content
+    assert "| Plains | 1.00 (1/1) | 1.00 (1/1) | — |" in summary_content
+
+    deck_content = (cfg.archive_dir / "reports" / "annual" / "decks" / "2026-welshie.md").read_text()
+    assert "## Land Use" in deck_content
+    assert "| Plains | 1.00 (1/1) | 1.00 (1/1) | — |" in deck_content
 
 
 def test_missing_carddb_surfaces_as_warning_not_exception(cfg):

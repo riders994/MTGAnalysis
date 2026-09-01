@@ -52,9 +52,17 @@ def populated(tmp_path: Path) -> Path:
     db_path = tmp_path / "carddb.sqlite"
     conn = sqlite3.connect(db_path)
     try:
-        conn.execute("CREATE TABLE Cards (GrpId INTEGER PRIMARY KEY, TitleId INTEGER)")
+        conn.execute(
+            "CREATE TABLE Cards (GrpId INTEGER PRIMARY KEY, TitleId INTEGER, "
+            "Types TEXT, Supertypes TEXT, LinkedFaceGrpIds TEXT, AbilityIds TEXT)"
+        )
         conn.execute("CREATE TABLE Localizations_enUS (LocId INTEGER PRIMARY KEY, Loc TEXT)")
-        conn.execute("INSERT INTO Cards (GrpId, TitleId) VALUES (75022, 1075022)")
+        conn.execute(
+            "CREATE TABLE Abilities (Id INTEGER PRIMARY KEY, Category INTEGER, SubCategory INTEGER)"
+        )
+        conn.execute(
+            "INSERT INTO Cards (GrpId, TitleId, Types, Supertypes) VALUES (75022, 1075022, '5', '1')"
+        )
         conn.execute(
             "INSERT INTO Localizations_enUS (LocId, Loc) VALUES (1075022, 'Island')"
         )
