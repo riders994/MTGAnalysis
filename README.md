@@ -3,8 +3,10 @@
 Generates reports on a player's MTG Arena log. Not meant to replace draftsim or
 17lands, but stats the way I want them.
 
-**Status: phase 1 — data collection.** Reports come later, once there is data
-worth reporting on.
+Two phases: a **collector** that captures every Arena session before Arena can
+overwrite it, and an **analysis** CLI that reads that archive and writes
+Markdown reports. See [USAGE.md](USAGE.md) for the full setup walkthrough of
+both.
 
 ## Why capture first
 
@@ -126,6 +128,30 @@ The collector also opens and closes the log on every poll rather than holding a
 handle. A long-lived handle without `FILE_SHARE_DELETE` would make Arena's rename
 fail and break its own logging.
 
+## Reports
+
+The `analysis` package reads the archive and writes Markdown reports under
+`archive/reports/`. Regenerated from scratch on every run — there is no
+separate state file to keep in sync with the archive they're derived from, so
+it is always safe to just run it again.
+
+```
+python -m analysis all-reports    # regenerate every report below in one pass
+```
+
+Or run one report at a time:
+
+```
+python -m analysis deck-changelog  # per-deck Markdown changelogs of deck-building history
+python -m analysis card-stats      # per-deck personal card-performance reports (GP/OH/GD/GIH/GNS win rates)
+python -m analysis bracket-stats   # best-effort Brawl bracket-signal report, win-rate-based (no ground-truth data)
+python -m analysis reports         # monthly/seasonal/annual rollups of card-stats' metrics, by format group
+```
+
+`--config` works the same way it does for the collector. See
+[USAGE.md](USAGE.md) for report layout details and the archive path used by
+each machine.
+
 ## Tests
 
 ```
@@ -138,11 +164,10 @@ restart-and-resume, rotation-while-down, and redundant-capture suppression. When
 through the collector in irregular chunks and the archive is asserted
 byte-identical to the sources; without them those tests skip.
 
-## Next
+## How matches are parsed
 
-Once there are a few weeks of sessions: design the parser and the reports
-against the real corpus. The log's match lifecycle is `EventJoin` →
-`EventSetDeckV3` → `EventEnterPairing` → `MatchGameRoomStateChangedEvent`, with
-`EventSetDeckV3` tying each match to a deck and decklist, and the room state's
-`finalMatchResult` carrying the outcome. Cards appear only as numeric `grpId`s,
-which is what the card database snapshots are for.
+The log's match lifecycle is `EventJoin` → `EventSetDeckV3` →
+`EventEnterPairing` → `MatchGameRoomStateChangedEvent`, with `EventSetDeckV3`
+tying each match to a deck and decklist, and the room state's
+`finalMatchResult` carrying the outcome. Cards appear only as numeric
+`grpId`s, which is what the card database snapshots are for.

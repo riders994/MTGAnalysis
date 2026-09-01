@@ -64,6 +64,22 @@ def cmd_reports(cfg, args: argparse.Namespace) -> int:
     return 1 if summary.warnings and not summary.summaries_written and not summary.decks_written else 0
 
 
+def cmd_all_reports(cfg, args: argparse.Namespace) -> int:
+    steps = (
+        ("deck-changelog", cmd_deck_changelog),
+        ("card-stats", cmd_card_stats),
+        ("bracket-stats", cmd_bracket_stats),
+        ("reports", cmd_reports),
+    )
+    status = 0
+    for i, (name, func) in enumerate(steps):
+        if i:
+            print()
+        print(f"== {name} ==")
+        status = func(cfg, args) or status
+    return status
+
+
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
@@ -111,6 +127,13 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
     )
     reports_parser.set_defaults(func=cmd_reports)
+
+    all_reports_parser = sub.add_parser(
+        "all-reports",
+        help="regenerate every report: deck-changelog, card-stats, bracket-stats, reports",
+        parents=[common],
+    )
+    all_reports_parser.set_defaults(func=cmd_all_reports)
 
     return parser
 

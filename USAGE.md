@@ -4,7 +4,7 @@ Two machines, two jobs:
 
 - **Windows** runs the collector. It captures every Arena session before Arena
   can overwrite it, into a local archive that is the source of truth.
-- **Raspberry Pi** stores the archive long-term and, later, runs the reports.
+- **Raspberry Pi** stores the archive long-term and runs the reports (Part C).
 
 Nothing moves between them automatically. `push` is a command you run.
 
@@ -453,5 +453,63 @@ while it is still known).
 Snapshots are stored by content hash, so an unchanged card database is kept once
 no matter how many times it is seen.
 
-Reports get built against this directory in phase 2 — which is why it lives on
-the Pi rather than only on the gaming machine.
+Reports are built against this directory, which is why it lives on the Pi
+rather than only on the gaming machine — see Part C.
+
+---
+
+# Part C — Running the reports
+
+Run this on the Pi, against the same `~/mtga.toml` from B5 — reports read the
+archive, they don't touch Arena or the collector.
+
+## C1. Regenerate everything
+
+```bash
+cd ~/MTGAnalysis
+python3 -m analysis --config ~/mtga.toml all-reports
+```
+
+This runs all four report types in one pass — `deck-changelog`, `card-stats`,
+`bracket-stats`, then `reports` — and prints each one's own summary as it
+goes. Every report is regenerated from scratch on every run: there is no
+separate state file to keep in sync with the archive, so re-running after
+pushing new sessions is always safe and just picks up whatever is new.
+
+## C2. Or run one report at a time
+
+```bash
+python3 -m analysis --config ~/mtga.toml deck-changelog  # per-deck Markdown changelogs of deck-building history
+python3 -m analysis --config ~/mtga.toml card-stats       # per-deck personal card-performance reports (GP/OH/GD/GIH/GNS win rates)
+python3 -m analysis --config ~/mtga.toml bracket-stats    # best-effort Brawl bracket-signal report, win-rate-based (no ground-truth data)
+python3 -m analysis --config ~/mtga.toml reports          # monthly/seasonal/annual rollups of card-stats' metrics, by format group
+```
+
+`--config` works on either side of the subcommand, same as the collector.
+
+## C3. Where reports land
+
+```
+/srv/mtga-archive/reports/
+  changelogs/<deck>.md
+  card_stats/<deck>.md
+  bracket_stats/overview.md
+  annual/summary/<year>-<format>.md
+  annual/decks/<year>-<deck>.md
+  monthly/summary/<year>-<month>-<format>.md
+  monthly/decks/<year>-<month>-<deck>.md
+  seasonal/summary/<season>-<format>.md
+  seasonal/decks/<season>-<deck>.md
+```
+
+Deck names are slugified, and a name collision (two decks that legitimately
+share a display name) gets a short hash suffix appended so neither report
+silently overwrites the other.
+
+## C4. A routine that works
+
+Right after B6's push, so reports reflect what just landed:
+
+```bash
+python3 -m analysis --config ~/mtga.toml all-reports
+```

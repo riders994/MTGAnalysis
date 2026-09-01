@@ -151,3 +151,14 @@ def test_reports_writes_annual_monthly_and_seasonal_files_for_the_populated_stan
     assert "monthly/decks/2026-08-lagaan.md" in out
     assert "seasonal/summary/the-hobbit-standard.md" in out
     assert "seasonal/decks/the-hobbit-lagaan.md" in out
+
+
+def test_all_reports_runs_every_report_type(populated, capsys):
+    assert main(["--config", str(populated), "all-reports"]) == 0
+    out = capsys.readouterr().out
+    assert "== deck-changelog ==" in out
+    assert "== card-stats ==" in out
+    assert "== bracket-stats ==" in out
+    assert "== reports ==" in out
+    assert "lagaan.md" in out
+    assert "annual/decks/2026-lagaan.md" in out
