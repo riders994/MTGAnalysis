@@ -30,6 +30,8 @@ from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
 
+from . import state as state_mod
+from .archive import now_iso
 from .config import Config, PushConfig
 
 log = logging.getLogger(__name__)
@@ -272,11 +274,18 @@ def run(cfg: Config, dry_run: bool = False, use_rsync: bool = False) -> str:
     if use_rsync:
         if not shutil.which("rsync"):
             raise PushError("--rsync given but rsync is not on PATH.")
-        return _push_rsync(cfg, cfg.push, dry_run)
+        result = _push_rsync(cfg, cfg.push, dry_run)
+    else:
+        if not shutil.which("ssh"):
+            raise PushError(
+                "ssh is not on PATH. On Windows install the OpenSSH client:\n"
+                "  Settings > System > Optional features > Add > OpenSSH Client"
+            )
+        result = _push_ssh(cfg, cfg.push, dry_run)
 
-    if not shutil.which("ssh"):
-        raise PushError(
-            "ssh is not on PATH. On Windows install the OpenSSH client:\n"
-            "  Settings > System > Optional features > Add > OpenSSH Client"
-        )
-    return _push_ssh(cfg, cfg.push, dry_run)
+    if not dry_run:
+        state = state_mod.load(cfg.state_path)
+        state.last_push = now_iso()
+        state_mod.save(cfg.state_path, state)
+
+    return result

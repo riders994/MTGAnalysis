@@ -63,6 +63,23 @@ def test_status_reports_the_archived_session(populated, capsys):
     assert "20260816T111009" in out
 
 
+def test_status_reports_never_pushed_until_a_push_succeeds(populated, capsys):
+    from collector import state as state_mod
+    from collector.archive import now_iso
+    from collector.config import load
+
+    assert main(["--config", str(populated), "status"]) == 0
+    assert "last push   never" in capsys.readouterr().out
+
+    cfg = load(populated)
+    state = state_mod.load(cfg.state_path)
+    state.last_push = now_iso()
+    state_mod.save(cfg.state_path, state)
+
+    assert main(["--config", str(populated), "status"]) == 0
+    assert "last push   0s ago" in capsys.readouterr().out
+
+
 def test_run_refuses_a_storage_host_config(tmp_path, capsys):
     config = tmp_path / "config.toml"
     config.write_text(f'[paths]\narchive_dir = "{(tmp_path / "a").as_posix()}"\n')

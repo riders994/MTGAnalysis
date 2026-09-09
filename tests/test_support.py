@@ -175,6 +175,20 @@ def test_push_requires_configuration(cfg):
         push_mod.run(cfg)
 
 
+def test_push_records_last_push_time_but_not_on_dry_run(cfg, monkeypatch):
+    from collector.config import PushConfig
+
+    cfg.push = PushConfig(host="pi@pi.local", remote_dir="/srv/arch")
+    monkeypatch.setattr(push_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(push_mod, "_push_ssh", lambda *a, **k: "ok")
+
+    push_mod.run(cfg, dry_run=True)
+    assert state_mod.load(cfg.state_path).last_push == ""
+
+    push_mod.run(cfg)
+    assert state_mod.load(cfg.state_path).last_push != ""
+
+
 def test_push_defaults_to_ssh_even_when_rsync_is_available(cfg, monkeypatch):
     """rsync on PATH must not hijack the transport.
 

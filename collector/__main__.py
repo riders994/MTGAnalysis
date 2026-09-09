@@ -153,6 +153,7 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
               + ("" if cfg.player_log.exists() else "   (not present)"))
     print(f"collector   {'RUNNING' if running else 'not running'}"
           f"   last tick {_age(state.last_tick)}")
+    print(f"last push   {_age(state.last_push)}")
     print()
 
     if state.current:

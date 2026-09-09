@@ -55,6 +55,7 @@ class State:
     # snapshot source path -> (size, mtime) seen last, to skip cheap re-hashing
     snapshot_stats: dict[str, list[float]] = field(default_factory=dict)
     last_tick: str = ""
+    last_push: str = ""
     warnings: list[str] = field(default_factory=list)
 
     def best_capture_for(self, session_id: str) -> Archived | None:
@@ -89,6 +90,7 @@ def load(path: Path) -> State:
             snapshots=data.get("snapshots", {}),
             snapshot_stats=data.get("snapshot_stats", {}),
             last_tick=data.get("last_tick", ""),
+            last_push=data.get("last_push", ""),
             warnings=data.get("warnings", []),
         )
     except (json.JSONDecodeError, OSError, TypeError, AttributeError):
@@ -107,6 +109,7 @@ def save(path: Path, state: State) -> None:
         "snapshots": state.snapshots,
         "snapshot_stats": state.snapshot_stats,
         "last_tick": state.last_tick,
+        "last_push": state.last_push,
         "warnings": state.warnings,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
