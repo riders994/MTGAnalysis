@@ -513,6 +513,9 @@ def test_land_use_section_reports_kept_vs_mulliganed_hand_land_counts(cfg, tmp_p
         "1.00 (2/2) in losses — vs. 3.00 (3/1) in a hand sent back on a mulligan"
         in content
     )
+    assert (
+        "**Lands in hand:** sent back 3.00 (3/1) — vs. kept 1.33 (4/3)" in content
+    )
 
 
 def test_land_use_section_reports_nonbasic_avg_turn_played(cfg, tmp_path):

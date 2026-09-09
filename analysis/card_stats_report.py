@@ -75,12 +75,16 @@ def _render_mulliganed_hands(stats: DeckStats | PeriodStats, names: CardNames) -
         key=lambda row: (-row[1], row[0]),
     )
     table_rows = "\n".join(f"| {name} | {count} |" for name, count in rows)
+    avg_lands = (
+        f"**Lands in hand:** sent back {_avg(stats.mulliganed_hand_land_count, stats.mulliganed_hand_count)} "
+        f"— vs. kept {_avg(stats.kept_hand_land_count, stats.gp)}\n\n"
+    )
     table = (
         f"{stats.mulligan_games} of {stats.gp} game(s) had at least one mulligan — cards seen "
         "in a sent-back hand, most-frequent first:\n\n"
         "| Card | Times Sent Back |\n|---|---|\n" + table_rows + "\n"
     )
-    return heading + table
+    return heading + avg_lands + table
 
 
 def _render_early_forfeits(stats: DeckStats | PeriodStats, names: CardNames) -> str:
