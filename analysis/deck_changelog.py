@@ -31,6 +31,7 @@ from collector.config import Config
 from .carddb import CardDbUnavailable, load_card_names
 from .changelog import assign_slugs, render_deck_changelog
 from .deck_events import DeckSave, extract_deck_saves
+from .diff import diff_saves
 from .sessions import iter_sessions, read_text
 
 GENERIC_DECK_NAMES = frozenset({"Draft Deck", "Sealed Deck", "Imported Deck"})
@@ -99,6 +100,31 @@ def merge_saves_by_identity(
         deck_id_to_canonical[deck_id] = canonical
         merged.setdefault(canonical, []).extend(saves)
     return merged, deck_id_to_canonical
+
+
+def current_era_start(saves: list[DeckSave]) -> str:
+    """The session_id where this deck's CURRENT decklist content was first
+    saved — the boundary between "previous build" and "current build".
+
+    Walks forward comparing each save to the one before it with diff_saves
+    (real content diffing, not Version numbers — Version resets at each new
+    raw deck_id, per merge_saves_by_identity's docstring, so it can't mark
+    era boundaries across a merged canonical identity). If every save has
+    identical content (or there's only one), the deck's whole history is one
+    era and this returns the very first save's session_id, which callers can
+    compare a match's own session_id against (session_ids sort
+    chronologically, per sessions.py) to tell current-build games from
+    earlier-build ones.
+
+    `saves` must already be in chronological order — true of both
+    collect_saves' per-raw-deck_id lists and merge_saves_by_identity's
+    concatenated canonical ones.
+    """
+    boundary = saves[0].session_id
+    for previous, current in zip(saves, saves[1:]):
+        if diff_saves(previous, current):
+            boundary = current.session_id
+    return boundary
 
 
 def run(cfg: Config) -> Summary:

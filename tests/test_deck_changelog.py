@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 from analysis import deck_changelog
+from analysis.deck_events import CardCount, DeckSave
 
 from conftest import deck_upsert_line
 
@@ -194,3 +195,43 @@ def test_missing_carddb_surfaces_as_warning_not_exception(cfg):
     assert summary.decks_written == []
     assert summary.warnings
     assert "carddb" in summary.warnings[0]
+
+
+# --- current_era_start (pure) -------------------------------------------
+
+
+def _save(session_id: str, *, main_deck=(), version="1") -> DeckSave:
+    return DeckSave(
+        deck_id="d", name="Deck", format="HistoricBrawl", version=version,
+        last_updated=None, last_played=None,
+        main_deck=tuple(CardCount(card_id, qty) for card_id, qty in main_deck),
+        session_id=session_id,
+    )
+
+
+def test_current_era_start_is_first_save_when_content_never_changes():
+    saves = [_save("20260101T000000", main_deck=[(1, 5)]), _save("20260102T000000", main_deck=[(1, 5)])]
+    assert deck_changelog.current_era_start(saves) == "20260101T000000"
+
+
+def test_current_era_start_is_the_most_recent_content_change():
+    saves = [
+        _save("20260101T000000", main_deck=[(1, 5)]),
+        _save("20260102T000000", main_deck=[(1, 6)]),  # real change
+        _save("20260103T000000", main_deck=[(1, 6)]),  # re-saved, no further change
+    ]
+    assert deck_changelog.current_era_start(saves) == "20260102T000000"
+
+
+def test_current_era_start_single_save():
+    saves = [_save("20260101T000000", main_deck=[(1, 5)])]
+    assert deck_changelog.current_era_start(saves) == "20260101T000000"
+
+
+def test_current_era_start_uses_the_last_of_several_changes():
+    saves = [
+        _save("20260101T000000", main_deck=[(1, 5)]),
+        _save("20260102T000000", main_deck=[(1, 6)]),  # change 1
+        _save("20260103T000000", main_deck=[(1, 7)]),  # change 2 -- this one wins
+    ]
+    assert deck_changelog.current_era_start(saves) == "20260103T000000"

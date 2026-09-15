@@ -4,7 +4,10 @@ Every section here answers, as best the data allows, one of the three
 questions this report exists for: how many brackets effectively exist, each
 commander's starting bracket, and each deck's current bracket. None of them
 can be answered with certainty — see the Limitations section, which is
-rendered first and is not decorative.
+rendered first and is not decorative. The bracket count itself is now a real
+(if coarse) estimate — see bracket_stats.estimate_brackets — rather than a
+flat "can't be done"; every "Est. Bracket" column below places that entity
+against those same account-specific bands.
 """
 
 from __future__ import annotations
@@ -13,9 +16,15 @@ from dataclasses import dataclass
 
 from .bracket_reference import REFERENCE_COMMANDERS, ReferenceEntry
 from .bracket_stats import (
+    BRACKET_GAP_THRESHOLD,
+    BRACKET_MIN_GAMES,
+    BracketBand,
     BracketData,
     BracketSegment,
     CommanderPilotStats,
+    DeckTrend,
+    bracket_index_for,
+    bracket_signal_for_deck,
     classify_trend,
     half_win_rates,
 )
@@ -49,18 +58,95 @@ def _render_limitations() -> str:
     )
 
 
-def _render_how_many_brackets() -> str:
+def _render_bracket_band_summary(title: str, bands: list[BracketBand]) -> str:
+    if not bands:
+        return (
+            f"_{title}: fewer than 2 decks have {BRACKET_MIN_GAMES}+ games yet — "
+            "not enough to compare, let alone find a gap between them._\n\n"
+        )
+    if len(bands) == 1:
+        band = bands[0]
+        return (
+            f"_{title}: {len(band.deck_ids)} deck(s) qualify "
+            f"({band.low:.0%}–{band.high:.0%} win rate) and no gap of "
+            f"{BRACKET_GAP_THRESHOLD:.0%} or more separates any of them — this account's "
+            "data doesn't yet support more than one distinct tier._\n\n"
+        )
+    rows = "\n".join(
+        f"- Bracket {band.index}: {band.low:.0%}–{band.high:.0%} win rate ({len(band.deck_ids)} deck(s))"
+        for band in bands
+    )
+    return f"_{title}: {len(bands)} distinct tiers found in this account's own decks:_\n\n{rows}\n\n"
+
+
+def _render_how_many_brackets(data: BracketData) -> str:
     return (
         "## How Many Brackets Exist?\n\n"
         "_Arena gives no bracket count to report — there is no equivalent "
         "of paper Commander's 1-5 scale exposed anywhere in the client or "
-        "logs for Brawl. The best this report can do is a relative "
-        "ordering of commanders and decks by win rate, below._\n\n"
+        "logs for Brawl. The best available substitute: look for real gaps "
+        "in this account's own deck win rates. Two decks with "
+        f"{BRACKET_MIN_GAMES}+ games each, separated by a "
+        f"{BRACKET_GAP_THRESHOLD:.0%}-or-more jump in win rate, are treated as sitting in "
+        "different tiers; decks below that game count aren't used to find the "
+        "boundaries. Only decks qualify for this — commanders faced or "
+        "piloted are not pooled in here, because that would also be mixing "
+        "in other players' piloting skill (see the overlap note further "
+        "down). Every boundary below is specific to this account's own "
+        "matches and can shift as more games accumulate — it says nothing "
+        "about the wider Brawl population.\n\n"
+        "One refinement: a deck's win rate since its last decklist change is "
+        "used in place of its lifetime win rate here, once that window "
+        f"itself has {BRACKET_MIN_GAMES}+ games. Per the user's own Arena "
+        "experience — unverified from logs, same status as the Reference "
+        "Commanders appendix — Arena is believed to preferentially match a "
+        "freshly-changed deck against other freshly-changed decks, to "
+        "re-rank it quickly rather than testing it against the general "
+        "population; that makes the since-change window converge on a "
+        "deck's *current* tier faster than blending in whatever the deck "
+        "used to be. See the Deck Trends table's \"Since Last Change\" "
+        "column for the raw numbers behind this. It isn't applied to "
+        "opponent commanders below — their per-commander samples are "
+        "already too thin to slice any further._\n\n"
+        + _render_bracket_band_summary("Ranked Brawl", data.ranked.bracket_bands)
+        + _render_bracket_band_summary("Casual Brawl", data.casual.bracket_bands)
     )
 
 
 def _reference_entry_for(name: str) -> ReferenceEntry | None:
     return REFERENCE_COMMANDERS.get(name)
+
+
+def _merge_opponent_tallies_by_name(
+    tallies: dict[int, OpponentCommanderTally], names: CardNames
+) -> dict[str, OpponentCommanderTally]:
+    """Arena assigns a new grp_id to every reprint, so the same commander
+    faced in two different printings would otherwise show up as two
+    half-sized rows. Fold by display name instead, same rationale as
+    deck_changelog's merge-by-identity."""
+    merged: dict[str, OpponentCommanderTally] = {}
+    for grp_id, tally in tallies.items():
+        target = merged.setdefault(names[grp_id], OpponentCommanderTally())
+        target.games += tally.games
+        target.wins += tally.wins
+        target.early_concedes += tally.early_concedes
+    return merged
+
+
+def _merge_pilots_by_name(
+    pilots: dict[int, CommanderPilotStats], names: CardNames
+) -> dict[str, CommanderPilotStats]:
+    """Same reprint-collapsing as _merge_opponent_tallies_by_name, for
+    commanders we've piloted ourselves. The merged entry's grp_id is just
+    whichever printing was folded in first — nothing downstream reads it."""
+    merged: dict[str, CommanderPilotStats] = {}
+    for grp_id, pilot in pilots.items():
+        target = merged.setdefault(names[grp_id], CommanderPilotStats(grp_id=grp_id))
+        target.deck_ids |= pilot.deck_ids
+        target.gp += pilot.gp
+        target.gp_wins += pilot.gp_wins
+        target.early_forfeit_games += pilot.early_forfeit_games
+    return merged
 
 
 @dataclass
@@ -84,13 +170,13 @@ class ReferenceValidation:
 
 
 def _reference_validation(
-    tallies: dict[int, OpponentCommanderTally], names: CardNames
+    tallies: dict[str, OpponentCommanderTally],
 ) -> ReferenceValidation | None:
     """None if we haven't faced at least one reference commander from EACH
     tier (can't compare what we don't have)."""
     high_games = high_wins = lower_games = lower_wins = 0
-    for grp_id, tally in tallies.items():
-        entry = _reference_entry_for(names[grp_id])
+    for name, tally in tallies.items():
+        entry = _reference_entry_for(name)
         if entry is None:
             continue
         if entry.tier == "High":
@@ -122,69 +208,87 @@ def _render_reference_check(validation: ReferenceValidation | None) -> str:
     )
 
 
+def _bracket_label(bands: list[BracketBand], games: int, win_rate: float) -> str:
+    """"—" below BRACKET_MIN_GAMES (a single data point can't be placed with
+    any confidence) or if this segment has no bands to place it in yet."""
+    if games < BRACKET_MIN_GAMES:
+        return "—"
+    index = bracket_index_for(bands, win_rate)
+    return str(index) if index is not None else "—"
+
+
 def _render_opponent_commander_table(
-    tallies: dict[int, OpponentCommanderTally], names: CardNames
+    tallies: dict[str, OpponentCommanderTally], bands: list[BracketBand]
 ) -> str:
     if not tallies:
         return "_No opponent commanders faced yet in this segment._\n\n"
     rows = sorted(
-        ((names[grp_id], tally, _reference_entry_for(names[grp_id])) for grp_id, tally in tallies.items()),
+        ((name, tally, _reference_entry_for(name)) for name, tally in tallies.items()),
         key=lambda row: (-row[1].games, row[0]),
     )
     table_rows = "\n".join(
         f"| {name} | {tally.games} | {_rate(tally.wins, tally.games)} "
-        f"| {_rate(tally.early_concedes, tally.games)} | {entry.tier if entry else '—'} |"
+        f"| {_rate(tally.early_concedes, tally.games)} | {entry.tier if entry else '—'} "
+        # Inverted: the opponent's power runs opposite our win rate against
+        # them (we winning a lot means they're weak), placed on the same
+        # scale estimate_brackets built from our own decks' win rates.
+        f"| {_bracket_label(bands, tally.games, 1 - tally.wins / tally.games)} |"
         for name, tally, entry in rows
     )
     return (
-        "| Commander | Faced | Our Win Rate | Early Concedes | Reference Tier |\n"
-        "|---|---|---|---|---|\n" + table_rows + "\n\n"
+        "| Commander | Faced | Our Win Rate | Early Concedes | Reference Tier | Est. Bracket |\n"
+        "|---|---|---|---|---|---|\n" + table_rows + "\n\n"
     )
 
 
-def _overlap_grp_ids(
-    pilots: dict[int, CommanderPilotStats], opponent_tallies: dict[int, OpponentCommanderTally]
-) -> set[int]:
+def _overlap_names(
+    pilots: dict[str, CommanderPilotStats], opponent_tallies: dict[str, OpponentCommanderTally]
+) -> set[str]:
     return set(pilots) & set(opponent_tallies)
 
 
 def _render_own_commander_table(
-    pilots: dict[int, CommanderPilotStats],
-    opponent_tallies: dict[int, OpponentCommanderTally],
-    names: CardNames,
+    pilots: dict[str, CommanderPilotStats],
+    opponent_tallies: dict[str, OpponentCommanderTally],
+    bands: list[BracketBand],
 ) -> str:
     if not pilots:
         return "_No commanders piloted yet in this segment._\n\n"
     rows = sorted(
-        ((names[grp_id], pilot, _reference_entry_for(names[grp_id])) for grp_id, pilot in pilots.items()),
+        ((name, pilot, _reference_entry_for(name)) for name, pilot in pilots.items()),
         key=lambda row: (-row[1].gp, row[0]),
     )
     table_rows = "\n".join(
         f"| {name} | {len(pilot.deck_ids)} | {pilot.gp} | {_rate(pilot.gp_wins, pilot.gp)} "
-        f"| {entry.tier if entry else '—'} |"
+        f"| {entry.tier if entry else '—'} | {_bracket_label(bands, pilot.gp, pilot.gp_wins / pilot.gp)} |"
         for name, pilot, entry in rows
     )
     table = (
-        "| Commander | Decks | Games | Our Win Rate | Reference Tier |\n"
-        "|---|---|---|---|---|\n" + table_rows + "\n\n"
+        "| Commander | Decks | Games | Our Win Rate | Reference Tier | Est. Bracket |\n"
+        "|---|---|---|---|---|---|\n" + table_rows + "\n\n"
     )
 
-    overlap = _overlap_grp_ids(pilots, opponent_tallies)
+    overlap = _overlap_names(pilots, opponent_tallies)
     if not overlap:
         return table
     overlap_notes = "\n".join(
-        f"- You've also piloted **{names[grp_id]}** yourself "
-        f"({pilots[grp_id].gp} games, {_rate(pilots[grp_id].gp_wins, pilots[grp_id].gp)}) — "
+        f"- You've also piloted **{name}** yourself "
+        f"({pilots[name].gp} games, {_rate(pilots[name].gp_wins, pilots[name].gp)}) — "
         "not directly comparable to the win rate *against* it above; one "
         "measures your skill with the deck, the other measures your success "
         "facing someone else's build of it."
-        for grp_id in sorted(overlap, key=lambda g: names[g])
+        for name in sorted(overlap)
     )
     return table + overlap_notes + "\n\n"
 
 
 def _render_deck_trends(
-    deck_stats: dict[str, DeckStats], deck_trends: dict, names: CardNames, *, is_ranked: bool
+    deck_stats: dict[str, DeckStats],
+    deck_trends: dict[str, DeckTrend],
+    names: CardNames,
+    bands: list[BracketBand],
+    *,
+    is_ranked: bool,
 ) -> str:
     if not deck_stats:
         return "_No decks in this segment yet._\n\n"
@@ -212,16 +316,31 @@ def _render_deck_trends(
         if label != "Insufficient Data":
             first_wr, second_wr = half_win_rates(match_results)
             detail = f"{first_wr:.0%} → {second_wr:.0%}"
-        rows.append((stats.name, stats.gp, _rate(stats.gp_wins, stats.gp), label, detail))
+
+        # Only shown once a real rebuild has actually happened -- if the
+        # since-change window covers the whole recorded history (no rebuild
+        # yet), there's nothing to distinguish from Overall Win Rate.
+        since_change = trend.since_last_change_results if trend else []
+        since_display = (
+            _rate(sum(since_change), len(since_change))
+            if trend and len(since_change) < len(match_results)
+            else "—"
+        )
+
+        signal_rate, signal_games = bracket_signal_for_deck(stats, trend)
+        bracket = _bracket_label(bands, signal_games, signal_rate)
+        rows.append(
+            (stats.name, stats.gp, _rate(stats.gp_wins, stats.gp), since_display, bracket, label, detail)
+        )
 
     rows.sort(key=lambda row: (-row[1], row[0]))
     table_rows = "\n".join(
-        f"| {name} | {gp} | {overall} | {label} | {detail} |"
-        for name, gp, overall, label, detail in rows
+        f"| {name} | {gp} | {overall} | {since_change} | {bracket} | {label} | {detail} |"
+        for name, gp, overall, since_change, bracket, label, detail in rows
     )
     table = (
-        "| Deck | Games | Overall Win Rate | Trend | First Half → Second Half |\n"
-        "|---|---|---|---|---|\n" + table_rows + "\n\n"
+        "| Deck | Games | Overall Win Rate | Since Last Change | Est. Bracket | Trend | First Half → Second Half |\n"
+        "|---|---|---|---|---|---|---|\n" + table_rows + "\n\n"
     )
     return caveat + table
 
@@ -230,16 +349,20 @@ def _render_segment(title: str, segment: BracketSegment, names: CardNames, *, is
     if not segment.deck_stats and not segment.opponent_commander_tallies:
         return f"### {title}\n\n_No {title} data yet._\n\n"
 
-    validation = _reference_validation(segment.opponent_commander_tallies, names)
+    opponent_by_name = _merge_opponent_tallies_by_name(segment.opponent_commander_tallies, names)
+    pilots_by_name = _merge_pilots_by_name(segment.commander_pilots, names)
+    validation = _reference_validation(opponent_by_name)
     return (
         f"### {title}\n\n"
         "#### Opponent Commanders (their starting bracket, as we've experienced it)\n\n"
-        + _render_opponent_commander_table(segment.opponent_commander_tallies, names)
+        + _render_opponent_commander_table(opponent_by_name, segment.bracket_bands)
         + _render_reference_check(validation)
         + "#### Our Commanders (their starting bracket, as we've piloted them)\n\n"
-        + _render_own_commander_table(segment.commander_pilots, segment.opponent_commander_tallies, names)
+        + _render_own_commander_table(pilots_by_name, opponent_by_name, segment.bracket_bands)
         + "#### Deck Trends (each deck's current bracket)\n\n"
-        + _render_deck_trends(segment.deck_stats, segment.deck_trends, names, is_ranked=is_ranked)
+        + _render_deck_trends(
+            segment.deck_stats, segment.deck_trends, names, segment.bracket_bands, is_ranked=is_ranked
+        )
     )
 
 
@@ -261,7 +384,7 @@ def render_bracket_stats(data: BracketData, names: CardNames) -> str:
     return (
         "# Brawl Bracket Signal\n\n"
         + _render_limitations()
-        + _render_how_many_brackets()
+        + _render_how_many_brackets(data)
         + "## Commander & Deck Brackets\n\n"
         + _render_segment("Ranked Brawl", data.ranked, names, is_ranked=True)
         + _render_segment("Casual Brawl", data.casual, names, is_ranked=False)

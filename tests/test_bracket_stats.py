@@ -91,6 +91,132 @@ def test_trend_boundary_swing_counts_as_rising():
     assert bracket_stats.classify_trend(results) == "Rising"
 
 
+# --- estimate_brackets / bracket_index_for (pure) ---------------------------
+
+
+def _deck(gp: int, gp_wins: int, *, deck_id: str = "d") -> DeckStats:
+    return DeckStats(deck_id=deck_id, name=deck_id, format="HistoricBrawl", gp=gp, gp_wins=gp_wins)
+
+
+def test_estimate_brackets_empty_below_two_qualifying_decks():
+    # Only one deck clears BRACKET_MIN_GAMES -- nothing to find a gap against.
+    deck_stats = {"a": _deck(gp=20, gp_wins=10), "b": _deck(gp=2, gp_wins=1)}
+    assert bracket_stats.estimate_brackets(deck_stats, {}) == []
+
+
+def test_estimate_brackets_single_band_when_no_gap_clears_threshold():
+    deck_stats = {
+        "a": _deck(gp=10, gp_wins=4),  # 40%
+        "b": _deck(gp=10, gp_wins=5),  # 50%
+        "c": _deck(gp=10, gp_wins=6),  # 60% -- biggest gap here is 10pts, below the 20pt threshold
+    }
+    bands = bracket_stats.estimate_brackets(deck_stats, {})
+    assert len(bands) == 1
+    assert set(bands[0].deck_ids) == {"a", "b", "c"}
+
+
+def test_estimate_brackets_splits_on_a_big_gap():
+    deck_stats = {
+        "weak": _deck(gp=10, gp_wins=3),  # 30%
+        "strong": _deck(gp=10, gp_wins=8),  # 80% -- 50pt gap, well past threshold
+    }
+    bands = bracket_stats.estimate_brackets(deck_stats, {})
+    assert [b.index for b in bands] == [1, 2]
+    assert bands[0].deck_ids == ["weak"]
+    assert bands[1].deck_ids == ["strong"]
+
+
+def test_bracket_index_for_places_value_inside_a_band():
+    deck_stats = {
+        "weak": _deck(gp=10, gp_wins=3),
+        "strong": _deck(gp=10, gp_wins=8),
+    }
+    bands = bracket_stats.estimate_brackets(deck_stats, {})
+    assert bracket_stats.bracket_index_for(bands, 0.30) == 1
+    assert bracket_stats.bracket_index_for(bands, 0.80) == 2
+
+
+def test_bracket_index_for_falls_back_to_nearest_edge_in_a_gap():
+    deck_stats = {
+        "weak": _deck(gp=10, gp_wins=3),  # 30%
+        "strong": _deck(gp=10, gp_wins=8),  # 80%
+    }
+    bands = bracket_stats.estimate_brackets(deck_stats, {})
+    assert bracket_stats.bracket_index_for(bands, 0.40) == 1  # closer to 30% than 80%
+    assert bracket_stats.bracket_index_for(bands, 0.75) == 2  # closer to 80% than 30%
+
+
+def test_bracket_index_for_none_without_any_bands():
+    assert bracket_stats.bracket_index_for([], 0.5) is None
+
+
+# --- DeckTrend.since_last_change_results / bracket_signal_for_deck (pure) ---
+
+
+def _trend(era_start: str, results: list[bool], session_ids: list[str]) -> bracket_stats.DeckTrend:
+    return bracket_stats.DeckTrend(
+        deck_id="d", match_results=results, match_session_ids=session_ids, era_start_session_id=era_start,
+    )
+
+
+def test_since_last_change_results_is_full_history_without_a_later_era():
+    # era_start_session_id == the first match's session -- nothing pre-dates it.
+    trend = _trend("20260101T000000", [True, False, True], ["20260101T000000", "20260102T000000", "20260103T000000"])
+    assert trend.since_last_change_results == [True, False, True]
+
+
+def test_since_last_change_results_drops_games_before_the_rebuild():
+    trend = _trend(
+        "20260103T000000",
+        [True, True, False, True],
+        ["20260101T000000", "20260102T000000", "20260103T000000", "20260104T000000"],
+    )
+    assert trend.since_last_change_results == [False, True]
+
+
+# 20 session ids, "20260101" .. "20260120" -- fixed-width and zero-padded,
+# so plain string comparison sorts them chronologically like real ones.
+_SESSION_IDS_20 = [f"202601{str(i).zfill(2)}T000000" for i in range(1, 21)]
+
+
+def test_bracket_signal_for_deck_prefers_since_change_once_it_has_enough_games():
+    stats = _deck(gp=20, gp_wins=10)  # 50% lifetime
+    # Rebuilt at the 13th session -- the last 8 games (all wins) are "since change".
+    trend = _trend(_SESSION_IDS_20[12], [False] * 12 + [True] * 8, _SESSION_IDS_20)
+    rate, games = bracket_stats.bracket_signal_for_deck(stats, trend)
+    assert (rate, games) == (1.0, 8)
+
+
+def test_bracket_signal_for_deck_falls_back_to_lifetime_below_the_games_floor():
+    stats = _deck(gp=20, gp_wins=10)  # 50% lifetime
+    # Rebuilt very recently -- only the last 2 games are "since change".
+    trend = _trend(_SESSION_IDS_20[18], [False] * 18 + [True, True], _SESSION_IDS_20)
+    rate, games = bracket_stats.bracket_signal_for_deck(stats, trend)
+    assert (rate, games) == (0.5, 20)
+
+
+def test_bracket_signal_for_deck_without_a_trend_uses_lifetime():
+    stats = _deck(gp=10, gp_wins=7)
+    assert bracket_stats.bracket_signal_for_deck(stats, None) == (0.7, 10)
+
+
+def test_estimate_brackets_uses_since_change_signal_to_reclassify_a_rebuilt_deck():
+    # Lifetime win rate (50%) would land "rebuilt" in the same tier as
+    # "steady" -- but its last 8 games (all wins, a real rebuild) put it in
+    # a clearly higher tier, and that's what should win out.
+    deck_stats = {
+        "steady": _deck(gp=10, gp_wins=5, deck_id="steady"),  # 50%, no trend data at all
+        "rebuilt": _deck(gp=20, gp_wins=10, deck_id="rebuilt"),  # 50% lifetime
+    }
+    deck_trends = {
+        "rebuilt": _trend(_SESSION_IDS_20[12], [False] * 12 + [True] * 8, _SESSION_IDS_20),
+    }
+    bands = bracket_stats.estimate_brackets(deck_stats, deck_trends)
+    assert [b.index for b in bands] == [1, 2]
+    assert bands[0].deck_ids == ["steady"]
+    assert bands[1].deck_ids == ["rebuilt"]
+
+
 # --- is_ranked_brawl ---------------------------------------------------------
 
 
@@ -303,6 +429,154 @@ def test_overlap_between_piloted_and_faced_commander_is_noted(cfg, tmp_path):
     assert "You've also piloted **Our Commander** yourself" in content
 
 
+def test_reprinted_commander_is_merged_by_name_not_split_by_grp_id(cfg, tmp_path):
+    # Two different grp_ids (reprints) sharing one display name — Arena
+    # assigns a fresh grp_id per printing, so this must be folded into one
+    # row rather than showing up as two half-sized ones.
+    TERGRID_REPRINT = 200005
+    write_carddb_snapshot(
+        cfg, tmp_path,
+        {
+            ISLAND: "Island", C1: "Our Commander",
+            TERGRID: "Tergrid, God of Fright",
+            TERGRID_REPRINT: "Tergrid, God of Fright",
+        },
+    )
+    text = (
+        deck_upsert_line(
+            "deck-a", "Deck A", format="HistoricBrawl", main_deck=[(ISLAND, 1)], command_zone=[(C1, 1)],
+        )
+        + _match_text("deck-a", course_id="c1", match_id="m1", our_commander=C1, opponent_commander=TERGRID, winning_team_id=1)
+        + _match_text("deck-a", course_id="c2", match_id="m2", our_commander=C1, opponent_commander=TERGRID_REPRINT, winning_team_id=2)
+    )
+    _write_session(cfg, "20260817T192832", text)
+
+    bracket_stats.run(cfg)
+    content = (cfg.archive_dir / "reports" / "bracket_stats" / "overview.md").read_text()
+
+    assert "| Tergrid, God of Fright | 2 | 50% (1/2) | 0% (0/2) | High |" in content
+    # The opponent table has exactly one Tergrid row (the merged one above);
+    # any split-by-grp_id regression would add a second "| Tergrid... | 1 |" row.
+    assert content.count("| Tergrid, God of Fright | 1 |") == 0
+
+
+def test_how_many_brackets_reports_two_tiers_with_a_real_gap(cfg, tmp_path):
+    write_carddb_snapshot(
+        cfg, tmp_path,
+        {ISLAND: "Island", C1: "Our Commander", TERGRID: "Tergrid, God of Fright", GENERIC_OPPONENT: "Some Rando Commander"},
+    )
+    # 20% vs 90% win rate, 10 games each -- a 70pt gap, well past BRACKET_GAP_THRESHOLD.
+    weak_matches = "".join(
+        _match_text(
+            "deck-a", course_id=f"wc{i}", match_id=f"wm{i}",
+            our_commander=C1, opponent_commander=GENERIC_OPPONENT,
+            winning_team_id=2 if i < 8 else 1,
+        )
+        for i in range(10)
+    )
+    strong_matches = "".join(
+        _match_text(
+            "deck-b", course_id=f"sc{i}", match_id=f"sm{i}",
+            our_commander=TERGRID, opponent_commander=GENERIC_OPPONENT,
+            winning_team_id=1 if i < 9 else 2,
+        )
+        for i in range(10)
+    )
+    text = (
+        deck_upsert_line(
+            "deck-a", "Weak Deck", format="HistoricBrawl", main_deck=[(ISLAND, 1)], command_zone=[(C1, 1)],
+        )
+        + weak_matches
+        + deck_upsert_line(
+            "deck-b", "Strong Deck", format="HistoricBrawl", main_deck=[(ISLAND, 1)], command_zone=[(TERGRID, 1)],
+        )
+        + strong_matches
+    )
+    _write_session(cfg, "20260817T192832", text)
+
+    bracket_stats.run(cfg)
+    content = (cfg.archive_dir / "reports" / "bracket_stats" / "overview.md").read_text()
+
+    assert "Casual Brawl: 2 distinct tiers found in this account's own decks:" in content
+    assert "Bracket 1: 20%–20% win rate (1 deck(s))" in content
+    assert "Bracket 2: 90%–90% win rate (1 deck(s))" in content
+    # The same bands place each deck (and, on our own commander table, the
+    # commander piloting it) in its bracket.
+    assert "| Weak Deck | 10 | 20% (2/10) | — | 1 |" in content
+    assert "| Strong Deck | 10 | 90% (9/10) | — | 2 |" in content
+    assert "| Our Commander | 1 | 10 | 20% (2/10) | — | 1 |" in content
+    assert "| Tergrid, God of Fright | 1 | 10 | 90% (9/10) | High | 2 |" in content
+
+
+def test_rebuild_changes_bracket_placement_and_shows_since_last_change(cfg, tmp_path):
+    write_carddb_snapshot(
+        cfg, tmp_path,
+        {ISLAND: "Island", C1: "Our Commander", TERGRID: "Tergrid, God of Fright", GENERIC_OPPONENT: "Some Rando Commander"},
+    )
+
+    # Old build: 4 losses.
+    pre_change_losses = "".join(
+        _match_text(
+            "deck-a", course_id=f"pc{i}", match_id=f"pm{i}",
+            our_commander=C1, opponent_commander=GENERIC_OPPONENT, winning_team_id=2,
+        )
+        for i in range(4)
+    )
+    session1 = (
+        deck_upsert_line(
+            "deck-a", "Rebuilt Deck", version="1", format="HistoricBrawl",
+            main_deck=[(ISLAND, 1)], command_zone=[(C1, 1)],
+        )
+        + pre_change_losses
+    )
+    _write_session(cfg, "20260801T000000", session1)
+
+    # A real decklist change -- Island count bumped 1 -> 2.
+    session2 = deck_upsert_line(
+        "deck-a", "Rebuilt Deck", version="2", format="HistoricBrawl",
+        main_deck=[(ISLAND, 2)], command_zone=[(C1, 1)],
+    )
+    _write_session(cfg, "20260802T000000", session2)
+
+    # New build: 8 wins.
+    post_change_wins = "".join(
+        _match_text(
+            "deck-a", course_id=f"nc{i}", match_id=f"nm{i}",
+            our_commander=C1, opponent_commander=GENERIC_OPPONENT, winning_team_id=1,
+        )
+        for i in range(8)
+    )
+    _write_session(cfg, "20260803T000000", post_change_wins)
+
+    # A second, never-rebuilt deck to actually find a gap against.
+    deck_b_matches = "".join(
+        _match_text(
+            "deck-b", course_id=f"b{i}", match_id=f"bm{i}",
+            our_commander=TERGRID, opponent_commander=GENERIC_OPPONENT,
+            winning_team_id=2 if i < 8 else 1,
+        )
+        for i in range(10)
+    )
+    session4 = (
+        deck_upsert_line(
+            "deck-b", "Steady Deck", format="HistoricBrawl", main_deck=[(ISLAND, 1)], command_zone=[(TERGRID, 1)],
+        )
+        + deck_b_matches
+    )
+    _write_session(cfg, "20260804T000000", session4)
+
+    bracket_stats.run(cfg)
+    content = (cfg.archive_dir / "reports" / "bracket_stats" / "overview.md").read_text()
+
+    # Lifetime blends the old 0/4 and new 8/8 into 67% -- but the
+    # Since Last Change column isolates the post-rebuild record...
+    assert "| Rebuilt Deck | 12 | 67% (8/12) | 100% (8/8) |" in content
+    # ...and that 100% is what wins for bracket placement (Bracket 2, well
+    # above Steady Deck's steady 20%), not the blended 67% alone.
+    assert "| Rebuilt Deck | 12 | 67% (8/12) | 100% (8/8) | 2 |" in content
+    assert "| Steady Deck | 10 | 20% (2/10) | — | 1 |" in content
+
+
 def test_deck_trend_rising_and_insufficient_data_render(cfg, tmp_path):
     write_carddb_snapshot(
         cfg, tmp_path, {ISLAND: "Island", C1: "Our Commander", GENERIC_OPPONENT: "Some Rando Commander"},
@@ -330,8 +604,11 @@ def test_deck_trend_rising_and_insufficient_data_render(cfg, tmp_path):
     bracket_stats.run(cfg)
     content = (cfg.archive_dir / "reports" / "bracket_stats" / "overview.md").read_text()
 
-    assert "| Deck A | 6 | 50% (3/6) | Rising | 0% → 100% |" in content
-    assert "| Deck B | 1 | 100% (1/1) | Insufficient Data | — |" in content
+    # Deck A is the only deck with >= BRACKET_MIN_GAMES games here, so there's
+    # no second point to find a gap against -- Est. Bracket stays "—" even
+    # though Deck A itself clears the games threshold.
+    assert "| Deck A | 6 | 50% (3/6) | — | — | Rising | 0% → 100% |" in content
+    assert "| Deck B | 1 | 100% (1/1) | — | — | Insufficient Data | — |" in content
 
 
 def test_run_produces_nothing_for_archive_with_no_brawl_data(cfg, tmp_path):
