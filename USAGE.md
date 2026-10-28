@@ -470,8 +470,8 @@ cd ~/MTGAnalysis
 python3 -m analysis --config ~/mtga.toml all-reports
 ```
 
-This runs all four report types in one pass — `deck-changelog`, `card-stats`,
-`bracket-stats`, then `reports` — and prints each one's own summary as it
+This runs all five report types in one pass — `deck-changelog`, `card-stats`,
+`bracket-stats`, `reports`, then `time-of-day` — and prints each one's own summary as it
 goes. Every report is regenerated from scratch on every run: there is no
 separate state file to keep in sync with the archive, so re-running after
 pushing new sessions is always safe and just picks up whatever is new.
@@ -483,6 +483,7 @@ python3 -m analysis --config ~/mtga.toml deck-changelog  # per-deck Markdown cha
 python3 -m analysis --config ~/mtga.toml card-stats       # per-deck personal card-performance reports (GP/OH/GD/GIH/GNS win rates)
 python3 -m analysis --config ~/mtga.toml bracket-stats    # best-effort Brawl bracket-signal report, win-rate-based (no ground-truth data)
 python3 -m analysis --config ~/mtga.toml reports          # monthly/seasonal/annual rollups of card-stats' metrics, by format group
+python3 -m analysis --config ~/mtga.toml time-of-day      # win rate by local time of day, 3-hour blocks per format group (ranked/casual Brawl split)
 ```
 
 `--config` works on either side of the subcommand, same as the collector.
@@ -494,6 +495,7 @@ python3 -m analysis --config ~/mtga.toml reports          # monthly/seasonal/ann
   changelogs/<deck>.md
   card_stats/<deck>.md
   bracket_stats/overview.md
+  time_of_day/overview.md
   annual/summary/<year>-<format>.md
   annual/decks/<year>-<deck>.md
   monthly/summary/<year>-<month>-<format>.md
