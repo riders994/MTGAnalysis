@@ -160,5 +160,6 @@ def test_all_reports_runs_every_report_type(populated, capsys):
     assert "== card-stats ==" in out
     assert "== bracket-stats ==" in out
     assert "== reports ==" in out
+    assert "== time-of-day ==" in out
     assert "lagaan.md" in out
     assert "annual/decks/2026-lagaan.md" in out

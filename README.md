@@ -146,6 +146,7 @@ python -m analysis deck-changelog  # per-deck Markdown changelogs of deck-buildi
 python -m analysis card-stats      # per-deck personal card-performance reports (GP/OH/GD/GIH/GNS win rates)
 python -m analysis bracket-stats   # best-effort Brawl bracket-signal report, win-rate-based (no ground-truth data)
 python -m analysis reports         # monthly/seasonal/annual rollups of card-stats' metrics, by format group
+python -m analysis time-of-day     # win rate by local time of day, 3-hour blocks per format group (ranked/casual Brawl split)
 ```
 
 `--config` works the same way it does for the collector. See

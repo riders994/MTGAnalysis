@@ -8,7 +8,7 @@ from pathlib import Path
 
 from collector.config import ConfigError, load
 
-from . import __version__, bracket_stats, card_stats, deck_changelog, reports
+from . import __version__, bracket_stats, card_stats, deck_changelog, reports, time_of_day
 
 
 def cmd_deck_changelog(cfg, args: argparse.Namespace) -> int:
@@ -64,12 +64,26 @@ def cmd_reports(cfg, args: argparse.Namespace) -> int:
     return 1 if summary.warnings and not summary.summaries_written and not summary.decks_written else 0
 
 
+def cmd_time_of_day(cfg, args: argparse.Namespace) -> int:
+    summary = time_of_day.run(cfg)
+    print(f"scanned {summary.sessions_scanned} session(s), "
+          f"found {summary.matches_found} match(es)")
+    print(f"wrote {len(summary.files_written)} report(s) to "
+          f"{cfg.archive_dir / 'reports' / 'time_of_day'}")
+    for name in sorted(summary.files_written):
+        print(f"  {name}")
+    for warning in summary.warnings:
+        print(f"  ! {warning}")
+    return 1 if summary.warnings and not summary.files_written else 0
+
+
 def cmd_all_reports(cfg, args: argparse.Namespace) -> int:
     steps = (
         ("deck-changelog", cmd_deck_changelog),
         ("card-stats", cmd_card_stats),
         ("bracket-stats", cmd_bracket_stats),
         ("reports", cmd_reports),
+        ("time-of-day", cmd_time_of_day),
     )
     status = 0
     for i, (name, func) in enumerate(steps):
@@ -128,9 +142,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reports_parser.set_defaults(func=cmd_reports)
 
+    time_of_day_parser = sub.add_parser(
+        "time-of-day",
+        help="regenerate the win-rate-by-time-of-day report, 3-hour blocks per format group (ranked/casual Brawl split)",
+        parents=[common],
+    )
+    time_of_day_parser.set_defaults(func=cmd_time_of_day)
+
     all_reports_parser = sub.add_parser(
         "all-reports",
-        help="regenerate every report: deck-changelog, card-stats, bracket-stats, reports",
+        help="regenerate every report: deck-changelog, card-stats, bracket-stats, reports, time-of-day",
         parents=[common],
     )
     all_reports_parser.set_defaults(func=cmd_all_reports)
