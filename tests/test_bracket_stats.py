@@ -268,6 +268,26 @@ def test_aggregate_opponent_commanders_merges_across_decks():
     assert merged[TERGRID].early_concedes == 1
 
 
+def test_own_commander_table_tolerates_zero_games_pilot():
+    """A drafted-but-never-played deck has a commander with 0 games."""
+    from analysis import bracket_report
+
+    pilots = {"Draft Only": bracket_stats.CommanderPilotStats(grp_id=1, deck_ids={"d"})}
+
+    out = bracket_report._render_own_commander_table(pilots, {}, [])
+
+    assert "| Draft Only | 1 | 0 | — |" in out
+    assert out.rstrip().endswith("| — |")
+
+
+def test_opponent_commander_table_tolerates_zero_games_tally():
+    from analysis import bracket_report
+
+    out = bracket_report._render_opponent_commander_table({"Nobody": OpponentCommanderTally()}, [])
+
+    assert "| Nobody | 0 | — |" in out
+
+
 # --- collect_bracket_stats end-to-end ---------------------------------------
 
 

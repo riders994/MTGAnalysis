@@ -211,7 +211,7 @@ def _render_reference_check(validation: ReferenceValidation | None) -> str:
 def _bracket_label(bands: list[BracketBand], games: int, win_rate: float) -> str:
     """"—" below BRACKET_MIN_GAMES (a single data point can't be placed with
     any confidence) or if this segment has no bands to place it in yet."""
-    if games < BRACKET_MIN_GAMES:
+    if games < BRACKET_MIN_GAMES or games <= 0:
         return "—"
     index = bracket_index_for(bands, win_rate)
     return str(index) if index is not None else "—"
@@ -232,7 +232,7 @@ def _render_opponent_commander_table(
         # Inverted: the opponent's power runs opposite our win rate against
         # them (we winning a lot means they're weak), placed on the same
         # scale estimate_brackets built from our own decks' win rates.
-        f"| {_bracket_label(bands, tally.games, 1 - tally.wins / tally.games)} |"
+        f"| {_bracket_label(bands, tally.games, 1 - tally.wins / (tally.games or 1))} |"
         for name, tally, entry in rows
     )
     return (
@@ -260,7 +260,7 @@ def _render_own_commander_table(
     )
     table_rows = "\n".join(
         f"| {name} | {len(pilot.deck_ids)} | {pilot.gp} | {_rate(pilot.gp_wins, pilot.gp)} "
-        f"| {entry.tier if entry else '—'} | {_bracket_label(bands, pilot.gp, pilot.gp_wins / pilot.gp)} |"
+        f"| {entry.tier if entry else '—'} | {_bracket_label(bands, pilot.gp, pilot.gp_wins / (pilot.gp or 1))} |"
         for name, pilot, entry in rows
     )
     table = (
