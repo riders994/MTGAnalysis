@@ -137,6 +137,7 @@ def test_per_card_stats_from_gre_traffic(cfg, tmp_path):
     full_summary = card_stats.run(cfg)
     content = (cfg.archive_dir / "reports" / "card_stats" / "lagaan.md").read_text()
     assert full_summary.decks_written == ["lagaan.md"]
+    assert "| IIH | IOB |" in content
     assert "Island" in content and "100% (1/1)" in content
     assert "No per-card data yet." not in content
 

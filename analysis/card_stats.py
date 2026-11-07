@@ -4,7 +4,7 @@ performance, render one Markdown report per deck.
 Regenerated from scratch on every run, same rationale as deck_changelog.py.
 Landed in two checkpoints: collect_card_stats' deck-level GP/GP-WR numbers
 come from match_events.py alone (no GRE parsing); the per-card OH/GD/GIH/
-GNS/IIH tallies are a strictly additive second pass built on game_state.py.
+GNS/IIH/IOB tallies are a strictly additive second pass built on game_state.py.
 """
 
 from __future__ import annotations
@@ -44,6 +44,10 @@ class CardTally:
     gd_wins: int = 0
     gns: int = 0
     gns_wins: int = 0
+    # Games where we actually played it (land drop or spell cast), a subset of
+    # the OH/GD games. Basis of the IOB column.
+    played: int = 0
+    played_wins: int = 0
     # gih / gih_wins are oh+gd / oh_wins+gd_wins, computed at render time —
     # not stored, so there's exactly one place counts could drift out of sync.
 
@@ -190,6 +194,10 @@ def fold_game(
             tally.gns += 1
             if outcome.won:
                 tally.gns_wins += 1
+        if game.land_play_counts.get(card_id) or game.cast_grp_ids.get(card_id):
+            tally.played += 1
+            if outcome.won:
+                tally.played_wins += 1
 
     if _is_early_self_forfeit(outcome, game, EARLY_FORFEIT_MAX_TURN):
         target.early_forfeit_games += 1

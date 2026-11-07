@@ -20,6 +20,14 @@ def _iih(tally: CardTally) -> str:
     return f"{(gih_wins / gih_n - tally.gns_wins / tally.gns):+.0%}"
 
 
+def _iob(tally: CardTally) -> str:
+    """Impact on board: win rate in games we played the card (land drop or
+    cast) minus win rate in games it never left the library, like IIH."""
+    if not tally.played or not tally.gns:
+        return "—"
+    return f"{(tally.played_wins / tally.played - tally.gns_wins / tally.gns):+.0%}"
+
+
 def _grouped_by_name(counts: dict[int, int], names: CardNames) -> dict[str, int]:
     """Sums per-grpId counts into per-name totals. Arena assigns a distinct
     grpId to every art/style variant of a card — most decks only ever use
@@ -45,6 +53,8 @@ def _card_tallies_by_name(card_tallies: dict[int, CardTally], names: CardNames) 
         target.gd_wins += tally.gd_wins
         target.gns += tally.gns
         target.gns_wins += tally.gns_wins
+        target.played += tally.played
+        target.played_wins += tally.played_wins
     return merged
 
 
@@ -53,7 +63,7 @@ def _card_row(name: str, tally: CardTally) -> tuple[str, str]:
     gih_n, gih_wins = tally.oh + tally.gd, tally.oh_wins + tally.gd_wins
     row = (
         f"| {name} | {_rate(tally.oh_wins, tally.oh)} | {_rate(tally.gd_wins, tally.gd)} "
-        f"| {_rate(gih_wins, gih_n)} | {_rate(tally.gns_wins, tally.gns)} | {_iih(tally)} |"
+        f"| {_rate(gih_wins, gih_n)} | {_rate(tally.gns_wins, tally.gns)} | {_iih(tally)} | {_iob(tally)} |"
     )
     return name, row
 
@@ -117,8 +127,8 @@ def _render_card_table(card_tallies: dict[int, CardTally], names: CardNames) -> 
         return "_No per-card data yet._\n"
     rows = sorted(_card_row(name, tally) for name, tally in _card_tallies_by_name(card_tallies, names).items())
     return (
-        "| Card | OH WR | GD WR | GIH WR | GNS WR | IIH |\n"
-        "|---|---|---|---|---|---|\n" + "\n".join(row for _, row in rows) + "\n"
+        "| Card | OH WR | GD WR | GIH WR | GNS WR | IIH | IOB |\n"
+        "|---|---|---|---|---|---|---|\n" + "\n".join(row for _, row in rows) + "\n"
     )
 
 
